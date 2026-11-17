@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EveSkillsheet: skills for all your characters</title>
+  <meta name="description" content="Track skills, queues, clones and flyable ships for all your EVE Online characters, and share a verified skill sheet.">
+  <meta name="theme-color" content="#0b0f14">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/config.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Eve<b>Skillsheet</b> <span id="version" class="version"></span></a>
+    <div id="status" class="status" aria-live="polite"></div>
+    <button id="refreshBtn">Refresh</button>
+    <button id="addBtn" class="primary">Add character</button>
+  </header>
+
+  <div id="setup" class="banner" hidden>
+    <b>Setup needed:</b> register an application at developers.eveonline.com and paste its Client ID into <code>config.js</code>. See README.md.
+  </div>
+
+  <div class="layout">
+    <aside>
+      <h2>Characters</h2>
+      <div id="chars"></div>
+      <p class="hint">Your first character becomes your <b>main</b>. Use <b>Add character</b> for each alt; EVE asks every character to approve access once.</p>
+      <p class="hint">Logins and cached data are stored only in this browser.</p>
+    </aside>
+    <main id="main"></main>
+  </div>
+
+  <dialog id="shareDlg"></dialog>
+  <div id="toasts"></div>
+  <footer class="foot">EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights are reserved worldwide. EveSkillsheet is not affiliated with CCP hf. · <a href="https://crankyape.space/">crankyape.space</a></footer>
+</body>
+</html>

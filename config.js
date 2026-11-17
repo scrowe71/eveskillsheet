@@ -2,7 +2,7 @@
 // PKCE login means there is no secret key anywhere in this app.
 window.SKILLSHEET_CONFIG = {
   // From https://developers.eveonline.com/applications, your EveSkillsheet application.
-  clientId: 'PASTE_CLIENT_ID_HERE',
+  clientId: '0f22c28f5a494edea1d0319467cde55d',
 
   // Must exactly match the Callback URL registered with CCP.
   // Leave null to use this site's root, e.g. https://skillsheet.crankyape.space/

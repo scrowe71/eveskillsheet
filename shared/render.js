@@ -2,7 +2,7 @@
 // and the public /s/<link> page.
 import {
   effectiveSkills, skillGroups, skillStats, queueSummary, queueProgress, shipStatus, jumpCloneReady,
-  formatSp, formatNum, formatDuration, formatDate, timeAgo, roman, esc,
+  formatSp, formatNum, formatDuration, formatDate, timeAgo, roman, esc, shipRace, RACES,
 } from './lib.js';
 
 const IMG = 'https://images.evetech.net';
@@ -22,7 +22,7 @@ export function tickCountdowns(root = document) {
  * data: { SK: skills.json, SH: ships.json }. opts: { actions: html, publicView: bool }
  */
 export function renderSheet(root, snap, data, opts = {}) {
-  const st = root._sheet ||= { tab: 'skills', q: '', untrained: false, shipQ: '', shipFilter: 'all', openShip: null };
+  const st = root._sheet ||= { tab: opts.defaultTab || 'skills', q: '', untrained: false, shipQ: '', shipFilter: 'all', shipRace: 'all', shipGroup: 'class', openShip: null };
   st.snap = snap; st.data = data; st.opts = opts;
   SKILLS = data.SK;
   st.skills = effectiveSkills(snap);
@@ -164,57 +164,83 @@ function tabQueue(st) {
 }
 
 // ---------------------------------------------------------------- ships
+const SHIP_FILTERS = [['all', 'All ships'], ['ok', 'Can fly'], ['close', 'Within 7 days'], ['month', 'Within 30 days'], ['no', "Can't fly yet"]];
+
+export function shipFilterMatch(filter, s, watched) {
+  if (filter === 'watch') return watched;
+  if (filter === 'ok') return s.ok;
+  if (filter === 'no') return !s.ok;
+  if (filter === 'close') return !s.ok && s.minutes != null && s.minutes <= 7 * 1440;
+  if (filter === 'month') return !s.ok && s.minutes != null && s.minutes <= 30 * 1440;
+  return true;
+}
+
+export const starBtn = (id, on) => `<button class="star ${on ? 'on' : ''}" data-watch="${id}" title="${on ? 'Remove from' : 'Add to'} your watchlist">${on ? '★' : '☆'}</button>`;
+
 function tabShips(st) {
   const { SK, SH } = st.data;
+  const watch = st.opts.watch;           // Set of type ids, or undefined on public sheets
   const terms = st.shipQ.toLowerCase().split(/\s+/).filter(Boolean);
   const groups = new Map();
   let flyable = 0, total = 0;
   for (const [id, ship] of Object.entries(SH)) {
     const s = shipStatus(ship, st.skills, SK, st.snap.attrs);
+    const race = shipRace(ship, SK);
     total++; if (s.ok) flyable++;
+    const watched = !!watch?.has(Number(id));
     const show = terms.every(t => ship.n.toLowerCase().includes(t) || ship.g.toLowerCase().includes(t)) &&
-      (st.shipFilter === 'all' || (st.shipFilter === 'ok' && s.ok) || (st.shipFilter === 'no' && !s.ok) ||
-       (st.shipFilter === 'close' && !s.ok && s.minutes != null && s.minutes <= 7 * 1440));
-    let g = groups.get(ship.g);
-    if (!g) groups.set(ship.g, g = { name: ship.g, ok: 0, total: 0, ships: [] });
-    g.total++; if (s.ok) g.ok++;
-    if (show) g.ships.push({ id: Number(id), ...ship, s });
+      (st.shipRace === 'all' || race === st.shipRace) && shipFilterMatch(st.shipFilter, s, watched);
+    const key = st.shipGroup === 'race' ? race : ship.g;
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { name: key, ok: 0, total: 0, ships: [] });
+    if (st.shipRace === 'all' || race === st.shipRace) { g.total++; if (s.ok) g.ok++; }
+    if (show) g.ships.push({ id: Number(id), ...ship, race, watched, s });
   }
-  const list = [...groups.values()].filter(g => g.ships.length).sort((a, b) => b.ok / b.total - a.ok / a.total || a.name.localeCompare(b.name));
+  const list = [...groups.values()].filter(g => g.ships.length).sort((a, b) =>
+    st.shipGroup === 'race' ? RACES.indexOf(a.name) - RACES.indexOf(b.name) : b.ok / b.total - a.ok / a.total || a.name.localeCompare(b.name));
   const timeTxt = s => s.minutes != null ? ` · ~${formatDuration(s.minutes * 60000)}` : '';
+  const openAll = terms.length || st.shipFilter !== 'all' || st.shipRace !== 'all';
+  const filters = watch ? [['watch', '★ Watchlist'], ...SHIP_FILTERS] : SHIP_FILTERS;
 
   return `
   <div class="toolbar">
     <input type="search" id="shipSearch" placeholder="Search ships or classes…" value="${esc(st.shipQ)}" autocomplete="off">
-    <select id="shipFilter">
-      ${[['all', 'All ships'], ['ok', 'Can fly'], ['close', 'Within 7 days'], ['no', "Can't fly yet"]].map(([v, l]) => `<option value="${v}" ${st.shipFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
+    <select id="shipFilter">${filters.map(([v, l]) => `<option value="${v}" ${st.shipFilter === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <select id="shipRace"><option value="all">All races</option>${RACES.map(r => `<option ${st.shipRace === r ? 'selected' : ''}>${r}</option>`).join('')}</select>
+    <select id="shipGroup">
+      <option value="class" ${st.shipGroup === 'class' ? 'selected' : ''}>Group by class</option>
+      <option value="race" ${st.shipGroup === 'race' ? 'selected' : ''}>Group by race</option>
     </select>
     <span class="dim">Can fly <b class="good">${flyable}</b> of ${total} hulls</span>
   </div>
   ${list.length ? list.map(g => `
-    <details class="group" ${terms.length || st.shipFilter !== 'all' ? 'open' : ''}>
+    <details class="group" ${openAll ? 'open' : ''}>
       <summary class="group-head">
         <span class="gname">${esc(g.name)}</span>
-        <span class="meter-sm"><i style="width:${(g.ok / g.total * 100).toFixed(0)}%"></i></span>
+        <span class="meter-sm"><i style="width:${(g.ok / Math.max(1, g.total) * 100).toFixed(0)}%"></i></span>
         <b>${g.ok}/${g.total}</b>
       </summary>
       <div class="ship-list">
         ${g.ships.sort((a, b) => (b.s.ok - a.s.ok) || a.s.sp - b.s.sp || a.n.localeCompare(b.n)).map(sh => `
           <div class="ship ${sh.s.ok ? 'ok' : ''} ${st.openShip === sh.id ? 'open' : ''}" data-ship="${sh.id}">
             <div class="ship-row">
+              ${watch ? starBtn(sh.id, sh.watched) : ''}
               <img src="${IMG}/types/${sh.id}/icon?size=32" alt="" width="28" height="28" loading="lazy">
-              <span class="sname">${esc(sh.n)}</span>
+              <span class="sname">${esc(sh.n)} <small class="dim">${esc(st.shipGroup === 'race' ? sh.g : sh.race)}</small></span>
               ${sh.s.ok ? '<span class="good">✓ Can fly</span>'
                 : `<span class="dim">${sh.s.missing.length} skill${sh.s.missing.length > 1 ? 's' : ''} · ${formatSp(sh.s.sp)} SP${timeTxt(sh.s)}</span>`}
             </div>
-            ${st.openShip === sh.id && !sh.s.ok ? `
-              <ul class="missing-list">
-                ${sh.s.missing.map(m => `<li><span>${esc(m.name)} ${m.injected ? `${roman(m.from)} → ` : '<em>not injected</em> → '}<b>${roman(m.to)}</b></span><span class="dim">${formatSp(m.sp)} SP${m.minutes != null ? ` · ${formatDuration(m.minutes * 60000)}` : ''}</span></li>`).join('')}
-              </ul>` : ''}
+            ${st.openShip === sh.id && !sh.s.ok ? missingList(sh.s.missing) : ''}
           </div>`).join('')}
       </div>
-    </details>`).join('') : '<p class="empty">No ships match.</p>'}
+    </details>`).join('') : `<p class="empty">${st.shipFilter === 'watch' ? 'Your watchlist is empty. Click ☆ next to any ship to add it.' : 'No ships match.'}</p>`}
   <p class="hint">Times use the character's current attributes and implants${st.snap.attrs ? '' : ' (hidden on this sheet, so times are not shown)'}. Click a ship to see what's missing.</p>`;
+}
+
+export function missingList(missing) {
+  return `<ul class="missing-list">
+    ${missing.map(m => `<li><span>${esc(m.name)} ${m.injected ? `${roman(m.from)} → ` : '<em>not injected</em> → '}<b>${roman(m.to)}</b></span><span class="dim">${formatSp(m.sp)} SP${m.minutes != null ? ` · ${formatDuration(m.minutes * 60000)}` : ''}</span></li>`).join('')}
+  </ul>`;
 }
 
 // ---------------------------------------------------------------- attributes
@@ -286,15 +312,15 @@ function tabClones(st) {
 function wire(root) {
   root.addEventListener('click', e => {
     const st = root._sheet;
+    const star = e.target.closest('[data-watch]');
+    if (star) { e.stopPropagation(); st.opts.onToggleWatch?.(Number(star.dataset.watch)); keepOpen(root, () => renderTab(root)); return; }
     const tab = e.target.closest('[data-tab]');
     if (tab) { st.tab = tab.dataset.tab; renderTab(root); return; }
     const ship = e.target.closest('[data-ship]');
     if (ship) {
       const id = Number(ship.dataset.ship);
       st.openShip = st.openShip === id ? null : id;
-      const open = [...root.querySelectorAll('details.group[open] .gname')].map(x => x.textContent);
-      renderTab(root);
-      root.querySelectorAll('details.group').forEach(d => { if (open.includes(d.querySelector('.gname').textContent)) d.open = true; });
+      keepOpen(root, () => renderTab(root));
     }
   });
   root.addEventListener('input', e => {
@@ -306,7 +332,16 @@ function wire(root) {
     const st = root._sheet;
     if (e.target.id === 'skillUntrained') { st.untrained = e.target.checked; renderTab(root); }
     if (e.target.id === 'shipFilter') { st.shipFilter = e.target.value; renderTab(root); }
+    if (e.target.id === 'shipRace') { st.shipRace = e.target.value; renderTab(root); }
+    if (e.target.id === 'shipGroup') { st.shipGroup = e.target.value; renderTab(root); }
   });
+}
+
+/** Re-render without collapsing the groups the user had open. */
+export function keepOpen(root, fn) {
+  const open = [...root.querySelectorAll('details.group[open] .gname')].map(x => x.textContent);
+  fn();
+  root.querySelectorAll('details.group').forEach(d => { if (open.includes(d.querySelector('.gname')?.textContent)) d.open = true; });
 }
 
 function rerenderKeepFocus(root, sel) {

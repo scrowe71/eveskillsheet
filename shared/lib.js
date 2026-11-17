@@ -150,3 +150,24 @@ export function timeAgo(ts, now = Date.now()) {
 export const formatDate = ts => ts ? new Date(ts).toISOString().slice(0, 16).replace('T', ' ') + ' EVE' : '';
 
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ---------------------------------------------------------------- ship race / faction
+const EMPIRES = ['Amarr', 'Caldari', 'Gallente', 'Minmatar'];
+export const RACES = [...EMPIRES, 'Triglavian', 'ORE', 'Pirate / faction', 'Upwell', 'Other'];
+
+/** Works out a hull's race from the racial ship skills it needs. Two empires = pirate/faction hull. */
+export function shipRace(ship, SK) {
+  const set = new Set();
+  for (const [id] of ship.q) {
+    const n = SK[id]?.n || '';
+    for (const r of EMPIRES) if (n.startsWith(`${r} `)) set.add(r);
+    if (n.startsWith('Precursor')) set.add('Triglavian');
+    if (/^(Mining |Exhumers|Industrial Command|Capital Industrial|Expedition)/.test(n)) set.add('ORE');
+    if (n.startsWith('Upwell')) set.add('Upwell');
+  }
+  const emp = EMPIRES.filter(r => set.has(r));
+  if (emp.length > 1) return 'Pirate / faction';
+  if (emp.length === 1) return emp[0];
+  for (const r of ['Triglavian', 'ORE', 'Upwell']) if (set.has(r)) return r;
+  return 'Other';
+}

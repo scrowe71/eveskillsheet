@@ -1,9 +1,9 @@
 import { SCOPES, buildSnapshot } from './shared/snapshot.js';
-import { renderSheet, tickCountdowns, until } from './shared/render.js';
-import { queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
+import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shared/render.js';
+import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.0.0';   // bump on every release
+export const APP_VERSION = '1.1.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -24,12 +24,21 @@ const state = {
   main: ls.get('ss.main', null),
   snaps: ls.get('ss.snaps', {}),      // id -> snapshot
   errors: {},
-  selected: ls.get('ss.selected', 'all'),
+  selected: ls.get('ss.selected', 'ships'),
+  watch: new Set(ls.get('ss.watch', [])),   // ship type ids on the watchlist
+  mx: { q: '', filter: null, race: 'all', cls: 'all', open: null },   // ship matrix view
   busy: null,
   data: null,                          // { SK, SH }
 };
 const saveChars = () => ls.set('ss.chars', state.chars);
 const saveSnaps = () => ls.set('ss.snaps', state.snaps);
+const sharingOn = () => CFG.sharing === true;
+
+function toggleWatch(id) {
+  if (state.watch.has(id)) state.watch.delete(id); else state.watch.add(id);
+  ls.set('ss.watch', [...state.watch]);
+  renderAside();
+}
 
 // ---------------------------------------------------------------- helpers
 const $ = s => document.querySelector(s);
@@ -300,6 +309,11 @@ function renderAside() {
   const list = charList();
   const totalSp = list.reduce((n, c) => n + (state.snaps[c.id]?.totalSp || 0), 0);
   $('#chars').innerHTML = `
+    <button class="char all ${state.selected === 'ships' ? 'sel' : ''}" data-sel="ships">
+      <span class="allicon">⛭</span>
+      <span class="info"><span class="top"><b>Ships</b></span>
+      <small class="dim">Who can fly what · ${state.watch.size} on watchlist</small></span>
+    </button>
     <button class="char all ${state.selected === 'all' ? 'sel' : ''}" data-sel="all">
       <span class="allicon">∑</span>
       <span class="info"><span class="top"><b>All characters</b><span class="sp">${formatSp(totalSp)}</span></span>
@@ -311,7 +325,7 @@ function renderAside() {
       <div class="char ${state.selected === c.id ? 'sel' : ''}" data-sel="${c.id}">
         <img src="${IMG}/characters/${c.id}/portrait?size=64" alt="" width="34" height="34">
         <span class="info">
-          <span class="top"><b>${esc(c.name)}</b>${c.id === state.main ? '<span class="glyph main" title="Main character">★</span>' : ''}${c.sheet ? '<span class="glyph shared" title="Has a shared sheet">⇗</span>' : ''}<span class="sp">${s ? formatSp(s.totalSp) : ''}</span></span>
+          <span class="top"><b>${esc(c.name)}</b>${c.id === state.main ? '<span class="glyph main" title="Main character">★</span>' : ''}${c.sheet && sharingOn() ? '<span class="glyph shared" title="Has a shared sheet">⇗</span>' : ''}<span class="sp">${s ? formatSp(s.totalSp) : ''}</span></span>
           ${c.needsLogin ? `<small class="warn">Login expired · <a href="#" data-relogin="${c.id}">log in again</a></small>`
             : state.errors[c.id] ? `<small class="warn" title="${esc(state.errors[c.id])}">Update failed</small>` : trainingLine(s)}
         </span>
@@ -331,6 +345,7 @@ function renderMain() {
       </div>`;
     return;
   }
+  if (state.selected === 'ships') { renderMatrix(main); return; }
   if (state.selected === 'all' || !state.chars[state.selected]) { main.replaceChildren(overview()); return; }
 
   const id = state.selected;
@@ -349,9 +364,12 @@ function renderMain() {
   }
   const c = state.chars[id];
   renderSheet(host, snap, state.data, {
+    defaultTab: 'ships',
+    watch: state.watch,
+    onToggleWatch: toggleWatch,
     actions: `
       ${id !== state.main ? `<button data-main="${id}">Make main</button>` : ''}
-      <button class="primary" data-share="${id}">${c.sheet ? 'Shared ✓' : 'Share sheet'}</button>`,
+      ${sharingOn() ? `<button class="primary" data-share="${id}">${c.sheet ? 'Shared ✓' : 'Share sheet'}</button>` : ''}`,
   });
 }
 
@@ -377,16 +395,17 @@ function overview() {
       <div class="stat"><span>Need attention</span><b class="${soon ? 'warn' : ''}">${soon}</b><small>queue empty or ends within 24h</small></div>
     </section>
     <table class="overview">
-      <thead><tr><th>Character</th><th class="num">Skillpoints</th><th class="num">Unallocated</th><th>Training now</th><th class="num">Level done in</th><th class="num">Queue ends in</th><th class="num">Synced</th></tr></thead>
+      <thead><tr><th>Character</th><th class="num">Skillpoints</th><th class="num">Unallocated</th><th class="num">Can fly</th><th>Training now</th><th class="num">Level done in</th><th class="num">Queue ends in</th><th class="num">Synced</th></tr></thead>
       <tbody>
         ${rows.map(({ c, s, qs }) => {
           const cur = qs && !qs.empty ? qs.current : null;
           const warn = qs && (qs.empty || qs.paused || (qs.ends && qs.ends - now < 24 * 3600e3));
           return `<tr class="click" data-sel="${c.id}">
             <td><div class="item"><img src="${IMG}/characters/${c.id}/portrait?size=64" alt="" width="32" height="32">
-              <div><b>${esc(c.name)}</b>${c.id === state.main ? ' <em class="main">MAIN</em>' : ''}${c.sheet ? ' <em class="shared">SHARED</em>' : ''}<small class="dim">${esc(s?.char.corpName || '')}</small></div></div></td>
+              <div><b>${esc(c.name)}</b>${c.id === state.main ? ' <em class="main">MAIN</em>' : ''}${c.sheet && sharingOn() ? ' <em class="shared">SHARED</em>' : ''}<small class="dim">${esc(s?.char.corpName || '')}</small></div></div></td>
             <td class="num">${s ? formatNum(s.totalSp) : '—'}</td>
             <td class="num ${s?.unallocSp ? 'accent' : 'dim'}">${s ? formatNum(s.unallocSp) : '—'}</td>
+            <td class="num">${s ? `<b class="good">${flyCount(c.id)}</b> <span class="dim">hulls</span>` : '—'}</td>
             <td>${cur ? `${esc(state.data.SK[cur.id]?.n || 'Skill')} <b class="lvl">${roman(cur.lvl)}</b>` : `<span class="${qs ? 'warn' : 'dim'}">${!s ? '—' : !qs ? 'Hidden' : 'Queue empty'}</span>`}</td>
             <td class="num">${cur && !qs.paused ? until(cur.finish) : ''}</td>
             <td class="num ${warn ? 'warn' : ''}">${qs?.paused ? 'Paused' : qs?.ends ? until(qs.ends) : ''}</td>
@@ -395,8 +414,102 @@ function overview() {
         }).join('')}
       </tbody>
     </table>
-    <p class="hint">Click a character to open their full sheet. Characters, logins and cached data are stored only in this browser. Only sheets you choose to share are sent to the server.</p>`;
+    <p class="hint">Click a character to open their full sheet. Characters, logins and cached data are stored only in this browser. ${sharingOn() ? ' Only sheets you choose to share are sent to the server.' : ''}</p>`;
   return el;
+}
+
+
+// ---------------------------------------------------------------- ship matrix (all characters)
+const MX_FILTERS = [['watch', '★ Watchlist'], ['any', 'Someone can fly'], ['close', 'Someone within 7 days'], ['all', 'All hulls'], ['none', 'Nobody can fly']];
+let pilotCache = { key: '', list: [] };
+
+function pilots() {
+  const list = charList().filter(c => state.snaps[c.id]);
+  const key = list.map(c => `${c.id}:${state.snaps[c.id].syncedAt}`).join('|');
+  if (pilotCache.key !== key) {
+    pilotCache = { key, list: list.map(c => ({ c, skills: effectiveSkills(state.snaps[c.id]), attrs: state.snaps[c.id].attrs, status: {} })) };
+  }
+  return pilotCache.list;
+}
+
+function statusFor(p, shipId) {
+  return p.status[shipId] ??= shipStatus(state.data.SH[shipId], p.skills, state.data.SK, p.attrs);
+}
+
+function flyCount(charId) {
+  const p = pilots().find(x => x.c.id === charId);
+  if (!p) return 0;
+  return Object.keys(state.data.SH).filter(id => statusFor(p, id).ok).length;
+}
+
+function renderMatrix(main) {
+  const { SK, SH } = state.data;
+  const mx = state.mx;
+  mx.filter ??= state.watch.size ? 'watch' : 'any';
+  const ps = pilots();
+  const terms = mx.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const classes = [...new Set(Object.values(SH).map(s => s.g))].sort();
+
+  const groups = new Map();
+  for (const [id, ship] of Object.entries(SH)) {
+    const race = shipRace(ship, SK);
+    if (mx.race !== 'all' && race !== mx.race) continue;
+    if (mx.cls !== 'all' && ship.g !== mx.cls) continue;
+    if (!terms.every(t => ship.n.toLowerCase().includes(t) || ship.g.toLowerCase().includes(t))) continue;
+    const st = ps.map(p => statusFor(p, id));
+    const n = st.filter(x => x.ok).length;
+    const best = Math.min(...st.filter(x => !x.ok && x.minutes != null).map(x => x.minutes), Infinity);
+    const keep = mx.filter === 'watch' ? state.watch.has(Number(id))
+      : mx.filter === 'any' ? n > 0
+      : mx.filter === 'close' ? n > 0 || best <= 7 * 1440
+      : mx.filter === 'none' ? n === 0 : true;
+    if (!keep) continue;
+    let g = groups.get(ship.g);
+    if (!g) groups.set(ship.g, g = { name: ship.g, rows: [] });
+    g.rows.push({ id: Number(id), ship, race, st, n, best });
+  }
+  const list = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const g of list) g.rows.sort((a, b) => b.n - a.n || a.best - b.best || a.ship.n.localeCompare(b.ship.n));
+  const shown = list.reduce((n, g) => n + g.rows.length, 0);
+
+  const cell = (r, i) => {
+    const s = r.st[i];
+    const open = mx.open === `${r.id}:${ps[i].c.id}`;
+    if (s.ok) return '<td class="mx ok" title="Can fly">✓</td>';
+    const t = s.minutes != null ? formatDuration(s.minutes * 60000) : `${formatSp(s.sp)} SP`;
+    const cls = s.minutes != null && s.minutes <= 7 * 1440 ? 'soon' : s.minutes != null && s.minutes <= 30 * 1440 ? 'mid' : 'far';
+    return `<td class="mx ${cls} ${open ? 'open' : ''}" data-mx="${r.id}:${ps[i].c.id}" title="${esc(ps[i].c.name)}: ${s.missing.length} skill(s) missing. Click for details">${t}</td>`;
+  };
+
+  main.innerHTML = ps.length ? `
+    <section class="pilot-chips">
+      ${ps.map(p => `<button class="pchip" data-sel="${p.c.id}" title="Open ${esc(p.c.name)}"><img src="${IMG}/characters/${p.c.id}/portrait?size=64" alt="" width="28" height="28"><span><b>${esc(p.c.name)}</b>${p.c.id === state.main ? ' <span class="glyph main">★</span>' : ''}<small><b class="good">${flyCount(p.c.id)}</b> hulls</small></span></button>`).join('')}
+    </section>
+    <section class="filters">
+      <input id="mxSearch" type="search" placeholder="Search ships or classes…" value="${esc(mx.q)}" autocomplete="off">
+      <select id="mxFilter">${MX_FILTERS.map(([v, l]) => `<option value="${v}" ${mx.filter === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="mxRace"><option value="all">All races</option>${RACES.map(r => `<option ${mx.race === r ? 'selected' : ''}>${r}</option>`).join('')}</select>
+      <select id="mxClass"><option value="all">All classes</option>${classes.map(c => `<option ${mx.cls === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <span class="dim">${shown} hull${shown === 1 ? '' : 's'}</span>
+    </section>
+    ${shown ? `
+    <div class="mx-wrap"><table class="matrix">
+      <thead><tr><th class="mx-ship">Ship</th>${ps.map(p => `<th class="mx-pilot" title="${esc(p.c.name)}"><img src="${IMG}/characters/${p.c.id}/portrait?size=64" alt="" width="26" height="26"><span>${esc(p.c.name)}</span></th>`).join('')}</tr></thead>
+      ${list.map(g => `
+        <tbody>
+          <tr class="mx-group"><td colspan="${ps.length + 1}">${esc(g.name)} <span class="dim">· ${g.rows.length}</span></td></tr>
+          ${g.rows.map(r => {
+            const openPilot = ps.findIndex(p => mx.open === `${r.id}:${p.c.id}`);
+            return `<tr>
+              <td class="mx-ship"><div class="item">${starBtn(r.id, state.watch.has(r.id))}<img src="${IMG}/types/${r.id}/icon?size=32" alt="" width="26" height="26" loading="lazy"><div>${esc(r.ship.n)}<small class="dim">${esc(r.race)}</small></div></div></td>
+              ${ps.map((_, i) => cell(r, i)).join('')}
+            </tr>
+            ${openPilot >= 0 ? `<tr class="mx-detail"><td colspan="${ps.length + 1}"><b>${esc(ps[openPilot].c.name)}</b> needs for the ${esc(r.ship.n)}:${missingList(r.st[openPilot].missing)}</td></tr>` : ''}`;
+          }).join('')}
+        </tbody>`).join('')}
+    </table></div>` : `<div class="empty big">${mx.filter === 'watch' ? 'Your watchlist is empty. Switch the filter to <b>Someone can fly</b> or <b>All hulls</b> and click ☆ next to the ships you care about.' : 'No ships match these filters.'}</div>`}
+    <p class="hint">✓ = can fly now. Otherwise the cell shows training time with that character's current attributes and implants (green ≤ 7 days, amber ≤ 30 days). Click a time to see the missing skills.</p>`
+    : '<div class="empty big">Add a character to see which ships they can fly.</div>';
 }
 
 function render() {
@@ -407,7 +520,7 @@ function render() {
 
 // ---------------------------------------------------------------- events
 function select(id) {
-  state.selected = id === 'all' ? 'all' : Number(id);
+  state.selected = id === 'all' || id === 'ships' ? id : Number(id);
   ls.set('ss.selected', state.selected);
   render();
   window.scrollTo({ top: 0 });
@@ -429,7 +542,7 @@ document.addEventListener('click', e => {
     }
     delete state.chars[id]; delete state.snaps[id];
     if (state.main === id) { state.main = charList()[0]?.id || null; ls.set('ss.main', state.main); }
-    if (state.selected === id) state.selected = 'all';
+    if (state.selected === id) state.selected = 'ships';
     saveChars(); saveSnaps(); render();
     toast('Removed from this browser. A shared sheet stays up until you stop sharing it (log the character in again to do that).');
     return;
@@ -440,8 +553,28 @@ document.addEventListener('click', e => {
   if (mk) { state.main = Number(mk.dataset.main); ls.set('ss.main', state.main); render(); return; }
   const sh = t.closest('[data-share]');
   if (sh) { openShare(Number(sh.dataset.share)); return; }
+  const w = t.closest('[data-watch]');
+  if (w && state.selected === 'ships') { toggleWatch(Number(w.dataset.watch)); renderMatrix($('#main')); return; }
+  const mxc = t.closest('[data-mx]');
+  if (mxc) { state.mx.open = state.mx.open === mxc.dataset.mx ? null : mxc.dataset.mx; renderMatrix($('#main')); return; }
   const sel = t.closest('[data-sel]');
   if (sel) select(sel.dataset.sel);
+});
+
+document.addEventListener('input', e => {
+  if (e.target.id !== 'mxSearch') return;
+  const pos = e.target.selectionStart;
+  state.mx.q = e.target.value;
+  renderMatrix($('#main'));
+  const n = $('#mxSearch'); n.focus(); try { n.setSelectionRange(pos, pos); } catch { /* ignore */ }
+});
+
+document.addEventListener('change', e => {
+  const map = { mxFilter: 'filter', mxRace: 'race', mxClass: 'cls' };
+  if (!map[e.target.id]) return;
+  state.mx[map[e.target.id]] = e.target.value;
+  state.mx.open = null;
+  renderMatrix($('#main'));
 });
 
 // ---------------------------------------------------------------- boot

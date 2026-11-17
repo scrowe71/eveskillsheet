@@ -281,3 +281,34 @@ dialog::backdrop { background: #000a; }
 .char .glyph { flex: none; font-size: 12px; }
 .char .glyph.main { color: var(--accent); }
 .char .glyph.shared { color: var(--accent-2); }
+
+/* ================================================================ ships focus (v1.1) */
+button.star { background: none; border: 0; padding: 0 4px; font-size: 16px; line-height: 1; color: #4b5a6c; flex: none; }
+button.star:hover { color: var(--accent); }
+button.star.on { color: var(--accent); }
+.ship-row .sname small { font-size: 11px; margin-left: 6px; }
+
+.pilot-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.pchip { display: flex; align-items: center; gap: 8px; text-align: left; background: var(--panel); padding: 6px 12px 6px 6px; }
+.pchip img { border-radius: 4px; }
+.pchip small { display: block; color: var(--dim); font-size: 12px; }
+
+.mx-wrap { overflow: auto; max-height: calc(100vh - 250px); border: 1px solid var(--line); border-radius: var(--radius); }
+table.matrix { border-collapse: separate; border-spacing: 0; }
+table.matrix th { top: 0; z-index: 2; }
+table.matrix th.mx-pilot { text-align: center; text-transform: none; letter-spacing: 0; min-width: 96px; max-width: 120px; vertical-align: bottom; }
+table.matrix th.mx-pilot img { display: block; margin: 0 auto 4px; border-radius: 4px; }
+table.matrix th.mx-pilot span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+table.matrix .mx-ship { position: sticky; left: 0; background: var(--panel); z-index: 1; min-width: 250px; }
+table.matrix th.mx-ship { z-index: 3; background: var(--panel-2); }
+table.matrix .mx-ship small { display: block; font-size: 11px; }
+table.matrix .mx-ship .item { gap: 6px; }
+tr.mx-group td { background: var(--panel-2); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--accent); position: sticky; left: 0; }
+td.mx { text-align: center; font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; cursor: pointer; border-left: 1px solid #1b2430; }
+td.mx.ok { color: #6cc28a; font-weight: 700; font-size: 16px; cursor: default; background: #10231a55; }
+td.mx.soon { color: #9fd9a8; }
+td.mx.mid { color: var(--accent); }
+td.mx.far { color: var(--dim); }
+td.mx:not(.ok):hover, td.mx.open { background: #1d2a38; }
+tr.mx-detail td { background: #0f141b; padding: 10px 14px 4px; }
+tr.mx-detail .missing-list { margin: 8px 0 8px; max-width: 640px; }

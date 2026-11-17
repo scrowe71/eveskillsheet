@@ -10,5 +10,12 @@
 /*.css
   Cache-Control: no-cache
 
-/data/*
-  Cache-Control: public, max-age=86400
+
+/
+  Cache-Control: no-cache
+
+/*.html
+  Cache-Control: no-cache
+
+/*.json
+  Cache-Control: no-cache

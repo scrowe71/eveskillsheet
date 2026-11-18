@@ -8,9 +8,17 @@ Track which ships each of your EVE Online characters can fly, plus their skills,
   - Filter by **★ Watchlist**, someone can fly, someone within 7 days, all hulls or nobody can fly. Also filter by **race** (Amarr, Caldari, Gallente, Minmatar, Triglavian, ORE, pirate/faction…) and by **class**.
   - Click ☆ on any ship to add it to your watchlist.
 - **Skill plans:**
-  - Paste a plan, one skill per line (`Drones V`, `Gallente Cruiser 4`), or load an EVEMon `.emp` / `.xml` file. Plans are saved in this browser.
-  - Pick a character to see how far along they are, plus every missing level in training order. Prerequisites that aren't in the plan are added first and flagged. Each level shows SP and training time, and there's a running total.
-  - Export the missing list three ways: **Copy missing skills** (one `Skill Name IV` per line), **Download .txt** or **Download .csv**. **Copy plan** copies the whole plan so you can paste it on another device.
+  - Each entry is a skill and level marked **Required** or **Recommended**. You can mark them per level, so `Drones IV` can be required and `Drones V` recommended.
+  - Build a plan in the editor:
+    - Add skills one at a time, using a skill-name picker.
+    - Paste a list, one per line. Headings like `Required:` / `Recommended:` and markers like `Drones V (recommended)` are understood.
+    - Or load an EVEMon `.emp` / `.xml` file, where priority 1 = required and anything else = recommended.
+    - Change any entry's level and priority, reorder entries, or remove them. Plans are saved in this browser.
+  - Compare against any character:
+    - Time to finish the required skills and time to finish everything, shown separately.
+    - Every missing level in training order: required skills (and their prerequisites) first, then recommended ones.
+    - Switch between **Required only** and **Required + recommended**.
+  - Exports follow the switch you picked: **Copy missing skills** (one `Skill Name IV` per line), **Download .txt** or **Download .csv** (the .csv includes a priority column). **Copy plan** copies the whole plan with its Required/Recommended headings, so you can paste it into another browser.
 - **All characters view:** total and unallocated SP, hulls each character can fly, what each is training, and when each queue ends. Empty or nearly-finished queues are flagged.
 - **Character sheet tabs:**
   - **Ships** (opens first): grouped by class or race, with the same filters and watchlist.

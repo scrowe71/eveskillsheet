@@ -173,78 +173,109 @@ export function shipRace(ship, SK) {
 }
 
 // ---------------------------------------------------------------- skill plans
+// A plan entry is [skillId, level, rec] where rec = 1 for "recommended", 0/absent for "required".
 const ROMAN_IN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5 };
+const REC_WORDS = /^(recommended|rec|optional|nice to have)$/i;
+const REQ_WORDS = /^(required|req|mandatory|minimum|min)$/i;
+
+/** Adds an entry unless the same skill + level is already there (required beats recommended). */
+export function addEntry(entries, id, lvl, rec) {
+  const same = entries.find(e => e[0] === id && e[1] === lvl);
+  if (same) { if (!rec) same[2] = 0; return entries; }
+  entries.push([id, lvl, rec ? 1 : 0]);
+  return entries;
+}
 
 /**
  * Reads a pasted skill plan. Understands:
  *  - one skill per line: "Gallente Cruiser V", "Drones 5", "Drones\t5", "1. Drones IV"
- *  - EVEMon plan XML: <entry skillID="3436" skill="Drones" level="5" ...>
- * Returns { entries: [[skillId, level]], errors: [line] }. Keeps the plan's order,
- * and drops repeats (a later higher level replaces an earlier one).
+ *  - a priority after the level: "Drones V (recommended)", "Drones IV [req]"
+ *  - section headings that switch priority: "Required:", "## Recommended", "Optional skills:"
+ *  - EVEMon plan XML: <entry skillID="3436" skill="Drones" level="5" ...> (priority 1 = required, else recommended)
+ * defaultRec sets the priority for lines with no marker or heading.
+ * Returns { entries: [[skillId, level, rec]], errors: [line] } in the plan's order.
  */
-export function parsePlan(text, SK) {
+export function parsePlan(text, SK, defaultRec = false) {
   const byName = new Map(Object.entries(SK).map(([id, s]) => [s.n.toLowerCase(), Number(id)]));
   const entries = [], errors = [];
-  const add = (id, lvl) => {
-    const i = entries.findIndex(e => e[0] === id && e[1] >= lvl);
-    if (i < 0) entries.push([id, lvl]);
-  };
   const xml = [...String(text).matchAll(/<entry\b[^>]*>/gi)];
   if (xml.length) {
     for (const [tag] of xml) {
       const id = Number(tag.match(/skillID="(\d+)"/i)?.[1]);
       const lvl = Number(tag.match(/level="(\d)"/i)?.[1]);
       const name = tag.match(/skill="([^"]+)"/i)?.[1];
+      const prio = Number(tag.match(/priority="(\d+)"/i)?.[1] || 1);
       const sid = SK[id] ? id : byName.get((name || '').toLowerCase());
-      if (sid && lvl >= 1 && lvl <= 5) add(sid, lvl); else errors.push(name || tag.slice(0, 60));
+      if (sid && lvl >= 1 && lvl <= 5) addEntry(entries, sid, lvl, defaultRec || prio > 1); else errors.push(name || tag.slice(0, 60));
     }
     return { entries, errors };
   }
+  let rec = !!defaultRec;
   for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.replace(/^\s*(\d+[.)]|[-*•])\s+/, '').trim();
+    let line = raw.replace(/^\s*(\d+[.)]|[-*•])\s+/, '').trim();
     if (!line) continue;
+    const head = line.replace(/^#+\s*/, '').replace(/\s*(skills?)?\s*:?\s*$/i, '').trim();
+    if (REC_WORDS.test(head)) { rec = true; continue; }
+    if (REQ_WORDS.test(head)) { rec = false; continue; }
+    let lineRec = rec;
+    const mark = line.match(/\s*(?:[([]\s*([a-z ]+?)\s*[)\]]|[-–]\s*([a-z ]+))\s*$/i);
+    const word = mark && (mark[1] || mark[2]);
+    if (word && (REC_WORDS.test(word) || REQ_WORDS.test(word))) { lineRec = REC_WORDS.test(word); line = line.slice(0, mark.index).trim(); }
     const m = line.match(/^(.+?)[\s:]+(?:level\s*)?(v|iv|iii|ii|i|[1-5])\s*$/i);
     const id = m && byName.get(m[1].trim().toLowerCase());
     if (!id) { errors.push(raw.trim()); continue; }
-    add(id, ROMAN_IN[m[2].toLowerCase()] || Number(m[2]));
+    addEntry(entries, id, ROMAN_IN[m[2].toLowerCase()] || Number(m[2]), lineRec);
   }
   return { entries, errors };
 }
 
 /**
- * Every skill level a character still needs to finish a plan, in training order:
- * missing prerequisites first, then each level one at a time.
- * Returns { steps: [{ id, name, lvl, sp, minutes, prereq }], done, total, sp, minutes }.
+ * Every skill level a character still needs, in training order: all required
+ * entries first (with their missing prerequisites), then recommended ones.
+ * Prerequisites take the priority of the entry that needs them.
+ * Returns { steps: [{ id, name, lvl, sp, minutes, prereq, rec }], req: {...totals}, all: {...totals} }.
  */
 export function planGap(entries, skills, SK, attrs) {
   const have = id => Math.max(0, skills[id]?.t ?? 0);
-  const planned = {};            // id -> highest level already queued in steps
+  const planned = {};
   const steps = [];
   const inPlan = new Set(entries.map(e => e[0]));
-  const need = (id, lvl, prereq, depth = 0) => {
+  const need = (id, lvl, rec, prereq, depth = 0) => {
     if (depth > 12) return;
     const from = Math.max(have(id), planned[id] || 0);
     if (from >= lvl) return;
-    if (!planned[id] && have(id) === 0 && !skills[id]) {
-      for (const [pid, plvl] of SK[id]?.q || []) need(pid, plvl, true, depth + 1);
+    if (!planned[id] && !skills[id]) {
+      for (const [pid, plvl] of SK[id]?.q || []) need(pid, plvl, rec, true, depth + 1);
     }
     const s = SK[id] || { n: `Skill ${id}`, r: 1 };
     const rate = spPerMinute(attrs, s);
     for (let l = from + 1; l <= lvl; l++) {
-      const sp = spForLevel(s.r, l) - Math.max(spForLevel(s.r, l - 1), l === have(id) + 1 ? skills[id]?.sp || 0 : 0);
-      steps.push({ id, name: s.n, lvl: l, sp: Math.max(0, sp), minutes: rate ? Math.max(0, sp) / rate : null, prereq: prereq && !inPlan.has(id) });
+      const sp = Math.max(0, spForLevel(s.r, l) - Math.max(spForLevel(s.r, l - 1), l === have(id) + 1 ? skills[id]?.sp || 0 : 0));
+      steps.push({ id, name: s.n, lvl: l, sp, minutes: rate ? sp / rate : null, prereq: prereq && !inPlan.has(id), rec: !!rec });
     }
     planned[id] = lvl;
   };
-  let done = 0;
-  for (const [id, lvl] of entries) {
-    if (have(id) >= lvl) done++;
-    need(id, lvl, false);
-  }
-  const sp = steps.reduce((n, s) => n + s.sp, 0);
-  const minutes = steps.every(s => s.minutes != null) ? steps.reduce((n, s) => n + s.minutes, 0) : null;
-  return { steps, done, total: entries.length, sp, minutes };
+  const req = entries.filter(e => !e[2]), rec = entries.filter(e => e[2]);
+  for (const [id, lvl] of req) need(id, lvl, false, false);
+  for (const [id, lvl] of rec) need(id, lvl, true, false);
+
+  const totals = (list, ents) => ({
+    done: ents.filter(([id, lvl]) => have(id) >= lvl).length,
+    total: ents.length,
+    sp: list.reduce((n, s) => n + s.sp, 0),
+    minutes: list.every(s => s.minutes != null) ? list.reduce((n, s) => n + s.minutes, 0) : null,
+    levels: list.length,
+  });
+  return { steps, req: totals(steps.filter(s => !s.rec), req), all: totals(steps, entries) };
 }
 
 /** "Skill Name V" lines, the format EVE and most tools accept when pasting a skill list. */
 export const planText = list => list.map(([id, lvl, name]) => `${name} ${roman(lvl)}`).join('\n');
+
+/** Whole plan as text with Required / Recommended sections (parsePlan reads it back). */
+export function planToText(entries, nameOf) {
+  const req = entries.filter(e => !e[2]), rec = entries.filter(e => e[2]);
+  const block = list => list.map(([id, lvl]) => `${nameOf(id)} ${roman(lvl)}`).join('\n');
+  if (!rec.length) return block(req);
+  return `Required:\n${block(req)}\n\nRecommended:\n${block(rec)}`;
+}

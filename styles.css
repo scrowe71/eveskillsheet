@@ -335,3 +335,4 @@ h3.sub { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color:
   .plan-table th, .plan-table td { padding: 8px 6px; }
 }
 .layout > * { min-width: 0; }
+.scroll-x th { position: static; }

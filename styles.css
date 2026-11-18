@@ -312,3 +312,26 @@ td.mx.far { color: var(--dim); }
 td.mx:not(.ok):hover, td.mx.open { background: #1d2a38; }
 tr.mx-detail td { background: #0f141b; padding: 10px 14px 4px; }
 tr.mx-detail .missing-list { margin: 8px 0 8px; max-width: 640px; }
+
+/* ================================================================ skill plans (v1.2) */
+.plan-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.plan-tabs button.on { border-color: var(--accent); color: var(--accent); }
+.plan-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.plan-head h2 { margin: 0 0 2px; font-size: 22px; }
+.pchip.sel { border-color: var(--accent); background: #241a0c; }
+.plan-edit { display: grid; gap: 12px; max-width: 760px; }
+.field { display: grid; gap: 6px; color: var(--dim); font-size: 13px; }
+.field input, .field textarea { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+.field textarea { font-family: ui-monospace, Consolas, monospace; font-size: 13px; resize: vertical; }
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+label.btn.file { cursor: pointer; }
+em.tag { font-style: normal; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; color: var(--accent-2); border: 1px solid #1f4a5c; border-radius: 3px; padding: 0 5px; margin-left: 6px; }
+h3.sub { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin: 18px 0 8px; }
+.done-list { display: flex; flex-wrap: wrap; gap: 6px 14px; color: #6cc28a; font-size: 13px; }
+.plan-table td .item { gap: 8px; }
+.scroll-x { overflow-x: auto; }
+@media (max-width: 700px) {
+  .plan-table th:nth-child(5), .plan-table td:nth-child(5) { display: none; }
+  .plan-table th, .plan-table td { padding: 8px 6px; }
+}
+.layout > * { min-width: 0; }

@@ -171,3 +171,80 @@ export function shipRace(ship, SK) {
   for (const r of ['Triglavian', 'ORE', 'Upwell']) if (set.has(r)) return r;
   return 'Other';
 }
+
+// ---------------------------------------------------------------- skill plans
+const ROMAN_IN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5 };
+
+/**
+ * Reads a pasted skill plan. Understands:
+ *  - one skill per line: "Gallente Cruiser V", "Drones 5", "Drones\t5", "1. Drones IV"
+ *  - EVEMon plan XML: <entry skillID="3436" skill="Drones" level="5" ...>
+ * Returns { entries: [[skillId, level]], errors: [line] }. Keeps the plan's order,
+ * and drops repeats (a later higher level replaces an earlier one).
+ */
+export function parsePlan(text, SK) {
+  const byName = new Map(Object.entries(SK).map(([id, s]) => [s.n.toLowerCase(), Number(id)]));
+  const entries = [], errors = [];
+  const add = (id, lvl) => {
+    const i = entries.findIndex(e => e[0] === id && e[1] >= lvl);
+    if (i < 0) entries.push([id, lvl]);
+  };
+  const xml = [...String(text).matchAll(/<entry\b[^>]*>/gi)];
+  if (xml.length) {
+    for (const [tag] of xml) {
+      const id = Number(tag.match(/skillID="(\d+)"/i)?.[1]);
+      const lvl = Number(tag.match(/level="(\d)"/i)?.[1]);
+      const name = tag.match(/skill="([^"]+)"/i)?.[1];
+      const sid = SK[id] ? id : byName.get((name || '').toLowerCase());
+      if (sid && lvl >= 1 && lvl <= 5) add(sid, lvl); else errors.push(name || tag.slice(0, 60));
+    }
+    return { entries, errors };
+  }
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.replace(/^\s*(\d+[.)]|[-*•])\s+/, '').trim();
+    if (!line) continue;
+    const m = line.match(/^(.+?)[\s:]+(?:level\s*)?(v|iv|iii|ii|i|[1-5])\s*$/i);
+    const id = m && byName.get(m[1].trim().toLowerCase());
+    if (!id) { errors.push(raw.trim()); continue; }
+    add(id, ROMAN_IN[m[2].toLowerCase()] || Number(m[2]));
+  }
+  return { entries, errors };
+}
+
+/**
+ * Every skill level a character still needs to finish a plan, in training order:
+ * missing prerequisites first, then each level one at a time.
+ * Returns { steps: [{ id, name, lvl, sp, minutes, prereq }], done, total, sp, minutes }.
+ */
+export function planGap(entries, skills, SK, attrs) {
+  const have = id => Math.max(0, skills[id]?.t ?? 0);
+  const planned = {};            // id -> highest level already queued in steps
+  const steps = [];
+  const inPlan = new Set(entries.map(e => e[0]));
+  const need = (id, lvl, prereq, depth = 0) => {
+    if (depth > 12) return;
+    const from = Math.max(have(id), planned[id] || 0);
+    if (from >= lvl) return;
+    if (!planned[id] && have(id) === 0 && !skills[id]) {
+      for (const [pid, plvl] of SK[id]?.q || []) need(pid, plvl, true, depth + 1);
+    }
+    const s = SK[id] || { n: `Skill ${id}`, r: 1 };
+    const rate = spPerMinute(attrs, s);
+    for (let l = from + 1; l <= lvl; l++) {
+      const sp = spForLevel(s.r, l) - Math.max(spForLevel(s.r, l - 1), l === have(id) + 1 ? skills[id]?.sp || 0 : 0);
+      steps.push({ id, name: s.n, lvl: l, sp: Math.max(0, sp), minutes: rate ? Math.max(0, sp) / rate : null, prereq: prereq && !inPlan.has(id) });
+    }
+    planned[id] = lvl;
+  };
+  let done = 0;
+  for (const [id, lvl] of entries) {
+    if (have(id) >= lvl) done++;
+    need(id, lvl, false);
+  }
+  const sp = steps.reduce((n, s) => n + s.sp, 0);
+  const minutes = steps.every(s => s.minutes != null) ? steps.reduce((n, s) => n + s.minutes, 0) : null;
+  return { steps, done, total: entries.length, sp, minutes };
+}
+
+/** "Skill Name V" lines, the format EVE and most tools accept when pasting a skill list. */
+export const planText = list => list.map(([id, lvl, name]) => `${name} ${roman(lvl)}`).join('\n');

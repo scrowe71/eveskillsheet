@@ -1,9 +1,9 @@
 import { SCOPES, buildSnapshot } from './shared/snapshot.js';
 import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shared/render.js';
-import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
+import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.1.0';   // bump on every release
+export const APP_VERSION = '1.2.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -27,12 +27,15 @@ const state = {
   selected: ls.get('ss.selected', 'ships'),
   watch: new Set(ls.get('ss.watch', [])),   // ship type ids on the watchlist
   mx: { q: '', filter: null, race: 'all', cls: 'all', open: null },   // ship matrix view
+  plans: ls.get('ss.plans', []),       // [{ id, name, entries: [[skillId, level]], updated }]
+  pv: { sel: null, char: null, edit: null, showDone: false },          // skill plan view
   busy: null,
   data: null,                          // { SK, SH }
 };
 const saveChars = () => ls.set('ss.chars', state.chars);
 const saveSnaps = () => ls.set('ss.snaps', state.snaps);
 const sharingOn = () => CFG.sharing === true;
+const savePlans = () => ls.set('ss.plans', state.plans);
 
 function toggleWatch(id) {
   if (state.watch.has(id)) state.watch.delete(id); else state.watch.add(id);
@@ -314,6 +317,11 @@ function renderAside() {
       <span class="info"><span class="top"><b>Ships</b></span>
       <small class="dim">Who can fly what · ${state.watch.size} on watchlist</small></span>
     </button>
+    <button class="char all ${state.selected === 'plans' ? 'sel' : ''}" data-sel="plans">
+      <span class="allicon">☰</span>
+      <span class="info"><span class="top"><b>Skill plans</b></span>
+      <small class="dim">${state.plans.length} saved plan${state.plans.length === 1 ? '' : 's'}</small></span>
+    </button>
     <button class="char all ${state.selected === 'all' ? 'sel' : ''}" data-sel="all">
       <span class="allicon">∑</span>
       <span class="info"><span class="top"><b>All characters</b><span class="sp">${formatSp(totalSp)}</span></span>
@@ -346,6 +354,10 @@ function renderMain() {
     return;
   }
   if (state.selected === 'ships') { renderMatrix(main); return; }
+  if (state.selected === 'plans') {
+    if (state.pv.edit && $('#planText')) return;   // don't wipe a plan being typed when a refresh finishes
+    renderPlans(main); return;
+  }
   if (state.selected === 'all' || !state.chars[state.selected]) { main.replaceChildren(overview()); return; }
 
   const id = state.selected;
@@ -512,6 +524,203 @@ function renderMatrix(main) {
     : '<div class="empty big">Add a character to see which ships they can fly.</div>';
 }
 
+// ---------------------------------------------------------------- skill plans
+const skName = id => state.data.SK[id]?.n || `Skill ${id}`;
+
+function download(name, text, type = 'text/plain') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const fileSafe = s => s.replace(/[^\w .-]+/g, '').trim().replace(/\s+/g, '_') || 'plan';
+
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); if (btn) { const t = btn.textContent; btn.textContent = 'Copied ✓'; setTimeout(() => { btn.textContent = t; }, 1500); } }
+  catch { toast("Couldn't reach the clipboard. Use Download instead.", 'error'); }
+}
+
+function gapFor(plan, charId) {
+  const snap = state.snaps[charId];
+  if (!snap) return null;
+  return planGap(plan.entries, effectiveSkills(snap), state.data.SK, snap.attrs);
+}
+
+function planEditor(plan) {
+  const text = plan ? planText(plan.entries.map(([id, l]) => [id, l, skName(id)])) : '';
+  return `
+    <section class="panel plan-edit">
+      <h3>${plan ? 'Edit plan' : 'New skill plan'}</h3>
+      <label class="field">Name<input id="planName" value="${esc(plan?.name || '')}" placeholder="e.g. Ishtar ratting" maxlength="80"></label>
+      <label class="field">Skills, one per line<textarea id="planText" rows="12" spellcheck="false" placeholder="Gallente Cruiser V&#10;Drones 5&#10;Heavy Assault Cruisers IV&#10;&#10;Paste from EVE, EVEMon or any skill list. Levels can be 1-5 or I-V.">${esc(text)}</textarea></label>
+      <div class="dim" id="planParse"></div>
+      <div class="row-actions">
+        <label class="btn file">Load EVEMon file (.emp / .xml)<input type="file" id="planFile" accept=".emp,.xml,.txt" hidden></label>
+        <span style="flex:1"></span>
+        <button id="planCancel">Cancel</button>
+        <button id="planSave" class="primary">Save plan</button>
+      </div>
+    </section>`;
+}
+
+function updateParseHint() {
+  const el = $('#planParse');
+  if (!el) return;
+  const { entries, errors } = parsePlan($('#planText').value, state.data.SK);
+  el.innerHTML = `<b class="good">${entries.length}</b> skill level${entries.length === 1 ? '' : 's'} recognised` +
+    (errors.length ? ` · <span class="warn">${errors.length} line${errors.length === 1 ? '' : 's'} not recognised: ${esc(errors.slice(0, 4).join(', '))}${errors.length > 4 ? '…' : ''}</span>` : '');
+}
+
+function renderPlans(main) {
+  const pv = state.pv;
+  const plans = state.plans;
+  if (pv.sel && !plans.find(p => p.id === pv.sel)) pv.sel = null;
+  pv.sel ??= plans[0]?.id || null;
+  const plan = plans.find(p => p.id === pv.sel);
+  const chars = charList().filter(c => state.snaps[c.id]);
+  if (!pv.char || !state.snaps[pv.char]) pv.char = chars[0]?.id || null;
+
+  let body = '';
+  if (pv.edit) {
+    body = planEditor(pv.edit === 'new' ? null : plan);
+  } else if (!plan) {
+    body = `<div class="empty big"><h2>No skill plans yet</h2><p>Paste a list of skills (from EVE, EVEMon or a fitting guide) and compare it against any of your characters.</p><button class="primary big" id="planNew2">Create a plan</button></div>`;
+  } else {
+    const gaps = chars.map(c => ({ c, g: gapFor(plan, c.id) }));
+    const cur = gaps.find(x => x.c.id === pv.char);
+    const g = cur?.g;
+    const missing = g ? g.steps : [];
+    const doneRows = g && pv.showDone ? plan.entries.filter(([id, lvl]) => Math.max(0, effectiveSkills(state.snaps[pv.char])[id]?.t ?? 0) >= lvl) : [];
+    let cum = 0;
+    body = `
+      <section class="plan-head">
+        <div><h2>${esc(plan.name)}</h2><span class="dim">${plan.entries.length} skill levels in plan · updated ${timeAgo(plan.updated)}</span></div>
+        <div class="actions">
+          <button id="planCopyAll">Copy plan</button>
+          <button id="planEdit">Edit</button>
+          <button id="planDelete" class="danger">Delete</button>
+        </div>
+      </section>
+      ${chars.length ? `
+      <section class="pilot-chips">
+        ${gaps.map(({ c, g }) => {
+          const pct = g.total ? Math.round(g.done / g.total * 100) : 100;
+          return `<button class="pchip ${c.id === pv.char ? 'sel' : ''}" data-plan-char="${c.id}">
+            <img src="${IMG}/characters/${c.id}/portrait?size=64" alt="" width="28" height="28">
+            <span><b>${esc(c.name)}</b><small>${g.steps.length ? `${pct}% · ${g.minutes != null ? formatDuration(g.minutes * 60000) : formatSp(g.sp) + ' SP'} to go` : '<span class="good">✓ Plan complete</span>'}</small></span>
+          </button>`;
+        }).join('')}
+      </section>
+      <section class="stats">
+        <div class="stat"><span>Plan items done</span><b>${g.done}<span class="dim"> / ${g.total}</span></b><small>${esc(cur.c.name)}</small></div>
+        <div class="stat"><span>Levels to train</span><b>${missing.length}</b><small>${missing.filter(m => m.prereq).length} are prerequisites not in the plan</small></div>
+        <div class="stat"><span>Skillpoints needed</span><b>${formatSp(g.sp)}</b><small>${formatNum(Math.round(g.sp))} SP</small></div>
+        <div class="stat"><span>Training time</span><b>${g.minutes != null ? formatDuration(g.minutes * 60000) : '—'}</b><small>at current attributes</small></div>
+      </section>
+      <div class="toolbar">
+        <button class="primary" id="gapCopy" ${missing.length ? '' : 'disabled'}>Copy missing skills</button>
+        <button id="gapTxt" ${missing.length ? '' : 'disabled'}>Download .txt</button>
+        <button id="gapCsv" ${missing.length ? '' : 'disabled'}>Download .csv</button>
+        <label class="check"><input type="checkbox" id="planShowDone" ${pv.showDone ? 'checked' : ''}> Show trained plan skills</label>
+      </div>
+      ${missing.length ? `
+      <div class="scroll-x"><table class="queue plan-table">
+        <thead><tr><th>#</th><th>Skill</th><th class="num">SP</th><th class="num">Time</th><th class="num">Running total</th></tr></thead>
+        <tbody>
+          ${missing.map((m, i) => { cum += m.minutes || 0; return `<tr>
+            <td class="dim">${i + 1}</td>
+            <td><div class="item"><img src="${IMG}/types/${m.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">${esc(m.name)} <b class="lvl">${roman(m.lvl)}</b>${m.prereq ? ' <em class="tag">prerequisite</em>' : ''}</div></td>
+            <td class="num dim">${formatNum(Math.round(m.sp))}</td>
+            <td class="num">${m.minutes != null ? formatDuration(m.minutes * 60000) : '—'}</td>
+            <td class="num dim">${m.minutes != null ? formatDuration(cum * 60000) : ''}</td>
+          </tr>`; }).join('')}
+        </tbody>
+      </table></div>` : `<div class="empty big"><span class="good">✓</span> ${esc(cur.c.name)} has every skill in this plan.</div>`}
+      ${doneRows.length ? `<h3 class="sub">Already trained</h3><div class="done-list">${doneRows.map(([id, l]) => `<span>✓ ${esc(skName(id))} ${roman(l)}</span>`).join('')}</div>` : ''}
+      <p class="hint">The missing list is in training order, with prerequisites first. "Copy missing skills" gives one skill level per line (e.g. <code>Drones IV</code>), which you can paste into EVE's skill queue or a skill plan. Plans are saved in this browser; use Copy plan to move one to another device.</p>`
+      : '<div class="empty big">Add a character to compare plans against.</div>'}`;
+  }
+
+  main.innerHTML = `
+    <section class="plan-tabs">
+      ${plans.map(p => `<button class="${p.id === pv.sel && !pv.edit ? 'on' : ''}" data-plan="${p.id}">${esc(p.name)}</button>`).join('')}
+      <button id="planNew" class="primary">+ New plan</button>
+    </section>
+    ${body}`;
+  if (pv.edit) updateParseHint();
+}
+
+function missingExport(kind) {
+  const plan = state.plans.find(p => p.id === state.pv.sel);
+  const c = state.chars[state.pv.char];
+  const g = gapFor(plan, c.id);
+  const base = `${fileSafe(plan.name)}_${fileSafe(c.name)}_missing`;
+  if (kind === 'text') return planText(g.steps.map(s => [s.id, s.lvl, s.name]));
+  if (kind === 'txt') return download(`${base}.txt`, planText(g.steps.map(s => [s.id, s.lvl, s.name])) + '\n');
+  const csv = ['Order,Skill,Level,Prerequisite,SP,Training minutes',
+    ...g.steps.map((s, i) => `${i + 1},"${s.name}",${s.lvl},${s.prereq ? 'yes' : 'no'},${Math.round(s.sp)},${s.minutes != null ? Math.round(s.minutes) : ''}`)].join('\n');
+  download(`${base}.csv`, csv + '\n', 'text/csv');
+}
+
+document.addEventListener('click', e => {
+  if (state.selected !== 'plans') return;
+  const t = e.target, pv = state.pv;
+  const tab = t.closest('[data-plan]');
+  if (tab) { pv.sel = tab.dataset.plan; pv.edit = null; return renderPlans($('#main')); }
+  const ch = t.closest('[data-plan-char]');
+  if (ch) { pv.char = Number(ch.dataset.planChar); return renderPlans($('#main')); }
+  const id = t.closest('button')?.id;
+  if (id === 'planNew' || id === 'planNew2') { pv.edit = 'new'; return renderPlans($('#main')); }
+  if (id === 'planEdit') { pv.edit = 'edit'; return renderPlans($('#main')); }
+  if (id === 'planCancel') { pv.edit = null; return renderPlans($('#main')); }
+  if (id === 'planSave') {
+    const name = $('#planName').value.trim();
+    const { entries } = parsePlan($('#planText').value, state.data.SK);
+    if (!name) { toast('Give the plan a name.', 'error'); return; }
+    if (!entries.length) { toast('No skills recognised. Use one skill per line, like "Drones V".', 'error'); return; }
+    if (pv.edit === 'new') {
+      const p = { id: Math.random().toString(36).slice(2, 10), name, entries, updated: Date.now() };
+      state.plans.push(p); pv.sel = p.id;
+    } else {
+      Object.assign(state.plans.find(p => p.id === pv.sel), { name, entries, updated: Date.now() });
+    }
+    savePlans(); pv.edit = null; renderAside(); renderPlans($('#main'));
+    toast(`Saved "${name}".`);
+    return;
+  }
+  if (id === 'planDelete') {
+    const btn = t.closest('button');
+    if (btn.dataset.confirm !== '1') { btn.dataset.confirm = '1'; btn.textContent = 'Click again to delete'; setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.textContent = 'Delete'; } }, 3000); return; }
+    state.plans = state.plans.filter(p => p.id !== pv.sel); pv.sel = null;
+    savePlans(); renderAside(); renderPlans($('#main'));
+    return;
+  }
+  if (id === 'planCopyAll') { const p = state.plans.find(x => x.id === pv.sel); return copyText(planText(p.entries.map(([i, l]) => [i, l, skName(i)])), t.closest('button')); }
+  if (id === 'gapCopy') return copyText(missingExport('text'), t.closest('button'));
+  if (id === 'gapTxt') return missingExport('txt');
+  if (id === 'gapCsv') return missingExport('csv');
+});
+
+document.addEventListener('input', e => { if (e.target.id === 'planText') updateParseHint(); });
+document.addEventListener('change', async e => {
+  if (e.target.id === 'planShowDone') { state.pv.showDone = e.target.checked; renderPlans($('#main')); }
+  if (e.target.id === 'planFile' && e.target.files[0]) {
+    const f = e.target.files[0];
+    let text;
+    try {
+      // .emp files are gzipped XML
+      text = /\.emp$/i.test(f.name) && 'DecompressionStream' in window
+        ? await new Response(f.stream().pipeThrough(new DecompressionStream('gzip'))).text()
+        : await f.text();
+    } catch { text = await f.text(); }
+    const { entries } = parsePlan(text, state.data.SK);
+    $('#planText').value = planText(entries.map(([i, l]) => [i, l, skName(i)]));
+    if (!$('#planName').value) $('#planName').value = f.name.replace(/\.(emp|xml|txt)$/i, '');
+    updateParseHint();
+  }
+});
+
 function render() {
   renderAside();
   renderMain();
@@ -520,7 +729,7 @@ function render() {
 
 // ---------------------------------------------------------------- events
 function select(id) {
-  state.selected = id === 'all' || id === 'ships' ? id : Number(id);
+  state.selected = ['all', 'ships', 'plans'].includes(id) ? id : Number(id);
   ls.set('ss.selected', state.selected);
   render();
   window.scrollTo({ top: 0 });

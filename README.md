@@ -7,6 +7,10 @@ Track which ships each of your EVE Online characters can fly, plus their skills,
 - **Ships view (the home page):** a grid of every hull against every character. A cell shows ✓ if that character can fly the hull now, or how long they need to train. Click a time to see the exact missing skills, including prerequisite chains, with SP and training time.
   - Filter by **★ Watchlist**, someone can fly, someone within 7 days, all hulls or nobody can fly. Also filter by **race** (Amarr, Caldari, Gallente, Minmatar, Triglavian, ORE, pirate/faction…) and by **class**.
   - Click ☆ on any ship to add it to your watchlist.
+- **Skill plans:**
+  - Paste a plan, one skill per line (`Drones V`, `Gallente Cruiser 4`), or load an EVEMon `.emp` / `.xml` file. Plans are saved in this browser.
+  - Pick a character to see how far along they are, plus every missing level in training order. Prerequisites that aren't in the plan are added first and flagged. Each level shows SP and training time, and there's a running total.
+  - Export the missing list three ways: **Copy missing skills** (one `Skill Name IV` per line), **Download .txt** or **Download .csv**. **Copy plan** copies the whole plan so you can paste it on another device.
 - **All characters view:** total and unallocated SP, hulls each character can fly, what each is training, and when each queue ends. Empty or nearly-finished queues are flagged.
 - **Character sheet tabs:**
   - **Ships** (opens first): grouped by class or race, with the same filters and watchlist.

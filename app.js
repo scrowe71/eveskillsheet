@@ -1211,6 +1211,7 @@ async function importBrowserData() {
 }
 
 async function boot() {
+  $('#version').textContent = `v${APP_VERSION}`;
   if (!configured()) $('#setup').hidden = false;
   await loadData();
   try { applyAccount(await accountApi('')); } catch (e) { if (e.status !== 401) toast(e.message, 'error'); }

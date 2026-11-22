@@ -32,7 +32,7 @@ export function spPerMinute(attrs, skill) {
 
 /**
  * Everything still needed to meet a list of [skillId, level] requirements,
- * following prerequisite chains for skills that aren't injected or high enough.
+ * following prerequisite chains (checked against trained levels, injected or not).
  * Returns [{ id, from, to, sp, minutes }].
  */
 export function missingFor(reqs, skills, SK, attrs) {
@@ -244,7 +244,9 @@ export function planGap(entries, skills, SK, attrs) {
     if (depth > 12) return;
     const from = Math.max(have(id), planned[id] || 0);
     if (from >= lvl) return;
-    if (!planned[id] && !skills[id]) {
+    // Prerequisites come first, checked against what's actually trained: a skillbook can be injected
+    // before its prerequisites are, so being injected (even at level 0) proves nothing.
+    if (!planned[id]) {
       for (const [pid, plvl] of SK[id]?.q || []) need(pid, plvl, rec, true, depth + 1);
     }
     const s = SK[id] || { n: `Skill ${id}`, r: 1 };

@@ -3,7 +3,7 @@ import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shar
 import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '2.0.0';   // bump on every release
+export const APP_VERSION = '2.0.1';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';

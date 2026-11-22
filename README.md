@@ -3,7 +3,7 @@
 Track which ships each of your EVE Online characters can fly, plus their skills, queues and clones, all in one place.
 
 - **Private.** The app runs in your browser and logs in with EVE SSO using PKCE, so there is no client secret. Tokens and cached data stay in this browser (localStorage).
-- **Main + alts.** Log in with your main first, then **Add character** for each alt. EVE makes every character approve access once. After that they all live under one page.
+- **Main + alts.** Log in with your main, then use **Add character** for each alt. EVE makes every character approve access once. Logging in with any character on the account opens that account.
 - **Ships view (the home page):** a grid of every hull against every character. A cell shows ✓ if that character can fly the hull now, or how long they need to train. Click a time to see the exact missing skills, including prerequisite chains, with SP and training time.
   - Filter by **★ Watchlist**, someone can fly, someone within 7 days, all hulls or nobody can fly. Also filter by **race** (Amarr, Caldari, Gallente, Minmatar, Triglavian, ORE, pirate/faction…) and by **class**.
   - Click ☆ on any ship to add it to your watchlist.
@@ -48,16 +48,20 @@ Track which ships each of your EVE Online characters can fly, plus their skills,
 4. Callback URL: `https://skillsheet.crankyape.space/` (**with the trailing slash**).
 5. Copy the **Client ID** into `config.js`. The secret key is not used, so never put it in this repo.
 
-### 2. Create the D1 database (only if you turn sharing on)
-1. In the Cloudflare dashboard, go to **Storage & Databases → D1 → Create database** and name it `eveskillsheet`.
-2. Open it, go to **Console**, paste the contents of `schema.sql`, and click **Execute**.
+### 2. Create the D1 database and the token key (required for accounts)
+1. In the Cloudflare dashboard, go to **Storage & Databases → D1 → Create database** and name it `eveskillsheet`. You don't need to run any SQL: tables are created automatically on first use.
+2. In the Pages project, go to **Settings → Bindings → Add → D1 database**. Variable name: `DB`. Database: `eveskillsheet`.
+3. In **Settings → Variables and Secrets → Add**, choose type **Secret**. Name: `TOKEN_KEY`. Value: a long random string (40+ characters, for example from a password manager). It encrypts the stored EVE refresh tokens. If you ever change it, everyone has to log their characters in again.
+4. Go to **Deployments** and use **Retry deployment** so the binding and secret take effect.
+
+(Optional: `schema.sql` is only for the share-link feature, which is off by default.)
 
 ### 3. Deploy on Cloudflare Pages
 1. Go to **Workers & Pages → Create → Pages → Connect to Git** and pick this repo.
    - Framework preset: **None**
    - Build command: *(leave empty)*
    - Build output directory: `/`
-2. *(Sharing only)* After the first deploy, open the Pages project and go to **Settings → Bindings → Add → D1 database**:
+2. *(Covered in step 2 above.)* The D1 binding is:
    - Variable name: `DB`
    - Database: `eveskillsheet`
 3. *(Sharing only)* In **Settings → Variables and Secrets**, add a plain-text variable `CLIENT_ID` set to the same Client ID. The share server then only accepts logins made through your app.

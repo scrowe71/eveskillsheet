@@ -376,3 +376,10 @@ tr.is-rec td { background: #0f1a22; }
 .fit-item.skip { color: var(--dim); }
 .blocked { display: grid; gap: 2px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
 .blocked:last-child { border-bottom: 0; }
+
+/* ================================================================ accounts (v2.0) */
+.who-box { display: inline-flex; align-items: center; gap: 10px; }
+.who-box .me { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--dim); }
+.who-box .me img { border-radius: 4px; }
+body.logged-out #addBtn, body.logged-out #refreshBtn, body.logged-out aside { display: none; }
+body.logged-out .layout { grid-template-columns: 1fr; }

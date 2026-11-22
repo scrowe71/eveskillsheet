@@ -3,7 +3,7 @@ import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shar
 import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.4.1';   // bump on every release
+export const APP_VERSION = '2.0.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -19,31 +19,71 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('localStorage full?', k, e); } },
 };
 
+// Characters, fits, plans and the watchlist belong to the logged-in account and are
+// stored on the server (functions/api/account). The browser only caches ESI snapshots,
+// per account, and forgets them on logout.
 const state = {
-  chars: ls.get('ss.chars', {}),      // id -> { id, name, access, refresh, exp, scopes, needsLogin, sheet }
-  main: ls.get('ss.main', null),
-  snaps: ls.get('ss.snaps', {}),      // id -> snapshot
+  account: null,                      // { id, main } once logged in
+  chars: {},                          // id -> { id, name, scopes, needsLogin, sheet }
+  main: null,
+  snaps: {},                          // id -> snapshot (cached per account in localStorage)
   errors: {},
   selected: ls.get('ss.selected', 'ships'),
-  watch: new Set(ls.get('ss.watch', [])),   // ship type ids on the watchlist
+  watch: new Set(),                   // ship type ids on the watchlist
   mx: { q: '', filter: null, race: 'all', cls: 'all', open: null },   // ship matrix view
-  fits: ls.get('ss.fits', []),         // [{ id, name, eft, updated }]
+  fits: [],                           // [{ id, name, eft, updated }]
   fv: { sel: null, char: null, edit: null, drones: ls.get('ss.fitDrones', true), charges: ls.get('ss.fitCharges', true), implants: ls.get('ss.fitImplants', true) },
   items: null,                          // data/items.json, loaded the first time Fits opens
-  plans: ls.get('ss.plans', []),       // [{ id, name, entries: [[skillId, level]], updated }]
+  plans: [],                          // [{ id, name, entries: [[skillId, level, rec]], updated }]
   pv: { sel: null, char: null, edit: null, draft: null, showDone: false, scope: ls.get('ss.planScope', 'all') },          // skill plan view
   busy: null,
   data: null,                          // { SK, SH }
 };
-const saveChars = () => ls.set('ss.chars', state.chars);
-const saveSnaps = () => ls.set('ss.snaps', state.snaps);
+const snapKey = () => `ss.snaps.${state.account?.id}`;
+const saveSnaps = () => { if (state.account) ls.set(snapKey(), state.snaps); };
 const sharingOn = () => CFG.sharing === true;
-const savePlans = () => ls.set('ss.plans', state.plans);
+
+// ---- account storage (server). Saves are batched so quick edits make one request.
+async function accountApi(path, { method = 'GET', body } = {}) {
+  const r = await fetch(`/api/account${path}`, {
+    method, credentials: 'same-origin',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await r.json(); } catch { /* empty */ }
+  if (!r.ok) throw Object.assign(new Error(data?.error || `Server error ${r.status}`), { status: r.status, needsLogin: data?.needsLogin });
+  return data;
+}
+const pendingSaves = new Map();
+function saveData(kind, value) {
+  clearTimeout(pendingSaves.get(kind));
+  pendingSaves.set(kind, setTimeout(() => {
+    pendingSaves.delete(kind);
+    accountApi(`/data/${kind}`, { method: 'PUT', body: { value } }).catch(e => toast(`Couldn't save ${kind}: ${e.message}`, 'error'));
+  }, 400));
+}
+const prefsValue = () => ({ main: state.main, sheets: Object.fromEntries(Object.values(state.chars).filter(c => c.sheet).map(c => [c.id, c.sheet])) });
+const saveChars = () => saveData('prefs', prefsValue());
+const savePlans = () => saveData('plans', state.plans);
 
 function toggleWatch(id) {
   if (state.watch.has(id)) state.watch.delete(id); else state.watch.add(id);
-  ls.set('ss.watch', [...state.watch]);
+  saveData('watch', [...state.watch]);
   renderAside();
+}
+
+/** Load the logged-in account into state. */
+function applyAccount(acc) {
+  state.account = acc.account;
+  const prefs = acc.data.prefs || {};
+  state.chars = Object.fromEntries(acc.characters.map(c => [c.id, { ...c, sheet: prefs.sheets?.[c.id] }]));
+  state.main = prefs.main && state.chars[prefs.main] ? prefs.main : acc.account.main;
+  state.fits = acc.data.fits || [];
+  state.plans = acc.data.plans || [];
+  state.watch = new Set(acc.data.watch || []);
+  state.snaps = ls.get(snapKey(), {});
+  for (const id of Object.keys(state.snaps)) if (!state.chars[id]) delete state.snaps[id];
 }
 
 // ---------------------------------------------------------------- helpers
@@ -110,21 +150,6 @@ async function tokenRequest(params) {
   return r.json();
 }
 
-function storeToken(tok, existing = {}) {
-  const jwt = decodeJwt(tok.access_token);
-  const id = Number(String(jwt.sub).split(':').pop());
-  const c = state.chars[id] = { ...existing, ...state.chars[id], id, name: jwt.name };
-  Object.assign(c, {
-    access: tok.access_token,
-    refresh: tok.refresh_token || c.refresh,
-    exp: jwt.exp * 1000,
-    scopes: [].concat(jwt.scp || []),
-    needsLogin: false,
-  });
-  if (!state.main) { state.main = id; ls.set('ss.main', id); }   // first character added becomes the main
-  saveChars();
-  return id;
-}
 
 async function handleCallback(params) {
   const saved = JSON.parse(sessionStorage.getItem('ss.pkce') || 'null');
@@ -133,24 +158,40 @@ async function handleCallback(params) {
   if (params.get('error')) throw new Error(`EVE login: ${params.get('error_description') || params.get('error')}`);
   if (!saved || saved.state !== params.get('state')) throw new Error('Login check failed (state mismatch). Please add the character again.');
   const tok = await tokenRequest({ grant_type: 'authorization_code', code: params.get('code'), code_verifier: saved.verifier });
-  return storeToken(tok);
+  const id = Number(String(decodeJwt(tok.access_token).sub).split(':').pop());
+  const body = { access_token: tok.access_token, refresh_token: tok.refresh_token };
+  if (state.account) {
+    // Logged in already: this is "Add character" (or logging a character in again).
+    await accountApi('/characters', { method: 'POST', body });
+    applyAccount(await accountApi(''));
+  } else {
+    // Not logged in: log in (first login with a character creates the account; that character is the main).
+    applyAccount(await accountApi('/login', { method: 'POST', body }));
+  }
+  tokens[id] = { access: tok.access_token, exp: decodeJwt(tok.access_token).exp * 1000 };
+  return id;
 }
 
-const refreshing = {};
+// Short-lived ESI access tokens, fetched from the account server (which keeps the refresh tokens).
+const tokens = {};       // id -> { access, exp }
+const fetchingToken = {};
 async function getToken(id) {
   const c = state.chars[id];
   if (!c) throw new Error('Unknown character');
-  if (c.access && c.exp - 60_000 > Date.now()) return c.access;
-  return (refreshing[id] ??= (async () => {
+  const t = tokens[id];
+  if (t && t.exp - 60_000 > Date.now()) return t.access;
+  return (fetchingToken[id] ??= (async () => {
     try {
-      const tok = await tokenRequest({ grant_type: 'refresh_token', refresh_token: c.refresh });
-      storeToken(tok, c);
-      return state.chars[id].access;
+      const r = await accountApi(`/token/${id}`);
+      tokens[id] = { access: r.access_token, exp: r.exp };
+      c.needsLogin = false;
+      return r.access_token;
     } catch (e) {
-      if (e.status === 400 || e.status === 401) { c.needsLogin = true; saveChars(); }
+      if (e.needsLogin) c.needsLogin = true;
+      if (e.status === 401 && !e.needsLogin) showLoggedOut();   // session expired
       throw e;
     } finally {
-      delete refreshing[id];
+      delete fetchingToken[id];
     }
   })());
 }
@@ -165,7 +206,7 @@ async function esi(path, { charId, method = 'GET', body } = {}) {
     if (r.ok) return r.json();
     const wait = Number(r.headers.get('Retry-After') || r.headers.get('X-ESI-Error-Limit-Reset')) || 2 ** attempt;
     if (r.status === 420 || r.status === 429 || r.status >= 500) { await sleep(Math.min(wait, 60) * 1000); continue; }
-    if (r.status === 401 && charId && attempt === 0) { state.chars[charId].exp = 0; continue; }
+    if (r.status === 401 && charId && attempt === 0) { delete tokens[charId]; continue; }
     let detail = '';
     try { detail = (await r.json()).error || ''; } catch { /* not JSON */ }
     const err = new Error(`ESI ${r.status} on ${path}${detail ? `: ${detail}` : ''}`);
@@ -355,9 +396,9 @@ function renderMain() {
   if (!Object.keys(state.chars).length) {
     main.innerHTML = `
       <div class="empty big">
-        <h2>Track all your characters' skills in one place</h2>
-        <p>Log in with your main first, then add each alt. EVE asks every character to approve access once.<br>After that they all stay here in this browser.</p>
-        <button class="primary big" id="firstLogin">Log in with EVE Online</button>
+        <h2>No characters on your account</h2>
+        <p>Add your characters with <b>Add character</b>. EVE asks each one to approve access once.</p>
+        <button class="primary big" id="firstLogin">Add character</button>
       </div>`;
     return;
   }
@@ -1041,7 +1082,7 @@ document.addEventListener('click', async e => {
 });
 
 // _parsed is a cache; never store it
-const saveFitsClean = () => ls.set('ss.fits', state.fits.map(({ _parsed, ...f }) => f));
+const saveFitsClean = () => saveData('fits', state.fits.map(({ _parsed, ...f }) => f));
 
 document.addEventListener('input', e => { if (e.target.id === 'fitText') updateFitHint(); });
 document.addEventListener('change', e => {
@@ -1078,17 +1119,20 @@ document.addEventListener('click', e => {
       setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.textContent = '×'; btn.classList.remove('confirm'); } }, 3000);
       return;
     }
-    delete state.chars[id]; delete state.snaps[id];
-    if (state.main === id) { state.main = charList()[0]?.id || null; ls.set('ss.main', state.main); }
-    if (state.selected === id) state.selected = 'ships';
-    saveChars(); saveSnaps(); render();
-    toast('Removed from this browser. A shared sheet stays up until you stop sharing it (log the character in again to do that).');
+    accountApi(`/characters/${id}`, { method: 'DELETE' }).then(() => {
+      delete state.chars[id]; delete state.snaps[id]; delete tokens[id];
+      if (state.main === id) state.main = charList()[0]?.id || null;
+      if (state.selected === id) state.selected = 'ships';
+      saveChars(); saveSnaps(); render();
+      toast('Character removed from your account.');
+    }).catch(err => toast(err.message, 'error'));
     return;
   }
   const re = t.closest('[data-relogin]');
   if (re) { e.preventDefault(); login(); return; }
   const mk = t.closest('[data-main]');
-  if (mk) { state.main = Number(mk.dataset.main); ls.set('ss.main', state.main); render(); return; }
+  if (mk) { state.main = Number(mk.dataset.main); saveChars(); render(); return; }
+  if (t.closest('#logoutBtn')) { logout(); return; }
   const sh = t.closest('[data-share]');
   if (sh) { openShare(Number(sh.dataset.share)); return; }
   const w = t.closest('[data-watch]');
@@ -1121,20 +1165,69 @@ async function loadData() {
   state.data = { SK, SH };
 }
 
+function renderWho() {
+  const acc = state.account;
+  document.body.classList.toggle('logged-out', !acc);
+  const main = acc && state.chars[state.main];
+  $('#who').innerHTML = acc
+    ? `<span class="me">${main ? `<img src="${IMG}/characters/${main.id}/portrait?size=64" alt="" width="24" height="24">${esc(main.name)}` : 'Your account'}</span><button id="logoutBtn">Log out</button>`
+    : '';
+}
+
+function showLoggedOut() {
+  state.account = null; state.chars = {}; state.snaps = {}; state.fits = []; state.plans = []; state.watch = new Set();
+  for (const k of Object.keys(tokens)) delete tokens[k];
+  renderWho();
+  $('#chars').innerHTML = '';
+  $('#main').innerHTML = `
+    <div class="empty big">
+      <h2>Your characters' skills, ships, fits and plans</h2>
+      <p>Log in with your main character. Your characters, fits and skill plans are saved to your account,<br>so only you can see them, on any device you log in from.</p>
+      <button class="primary big" id="firstLogin">Log in with EVE Online</button>
+    </div>`;
+}
+
+async function logout() {
+  try { await accountApi('/logout', { method: 'POST' }); } catch { /* already gone */ }
+  try { localStorage.removeItem(snapKey()); } catch { /* ignore */ }
+  showLoggedOut();
+  toast('Logged out.');
+}
+
+/** One-time move of data saved in this browser before accounts existed. */
+async function importBrowserData() {
+  const old = { chars: ls.get('ss.chars', null), fits: ls.get('ss.fits', null), plans: ls.get('ss.plans', null), watch: ls.get('ss.watch', null), main: ls.get('ss.main', null) };
+  if (!old.chars && !old.fits && !old.plans && !old.watch) return;
+  const refresh_tokens = Object.values(old.chars || {}).map(c => c.refresh).filter(Boolean);
+  setBusy('Moving your saved characters, fits and plans into your account…');
+  try {
+    const res = await accountApi('/import', { method: 'POST', body: { refresh_tokens, fits: old.fits || [], plans: old.plans || [], watch: old.watch || [], prefs: old.main ? { main: old.main } : undefined } });
+    applyAccount(res);
+    for (const k of ['ss.chars', 'ss.fits', 'ss.plans', 'ss.watch', 'ss.main', 'ss.snaps']) localStorage.removeItem(k);
+    toast(`Moved into your account: ${res.added.length} character${res.added.length === 1 ? '' : 's'}, ${(old.fits || []).length} fits, ${(old.plans || []).length} plans.${res.failed.length ? ` ${res.failed.length} character login(s) had expired; add them again.` : ''}`);
+  } catch (e) {
+    toast(`Couldn't move your browser data: ${e.message}`, 'error');
+  } finally { setBusy(null); }
+}
+
 async function boot() {
   if (!configured()) $('#setup').hidden = false;
   await loadData();
+  try { applyAccount(await accountApi('')); } catch (e) { if (e.status !== 401) toast(e.message, 'error'); }
   const params = new URLSearchParams(location.search);
   let added = null;
   if (params.has('code') || params.has('error')) {
     try {
       added = await handleCallback(params);
       state.selected = added; ls.set('ss.selected', added);
-      toast(`${state.chars[added].name} added.`);
+      toast(`${state.chars[added]?.name || 'Character'} ${Object.keys(state.chars).length > 1 ? 'added' : 'logged in'}.`);
     } catch (e) { toast(e.message, 'error'); }
   }
-  render();
   setInterval(() => tickCountdowns(), 30_000);
+  if (!state.account) { showLoggedOut(); return; }
+  await importBrowserData();
+  renderWho();
+  render();
 
   if (added) await refreshAll([added]);
   const stale = Object.keys(state.chars).map(Number).filter(id => id !== added && (!state.snaps[id] || Date.now() - state.snaps[id].syncedAt > STALE_MS));

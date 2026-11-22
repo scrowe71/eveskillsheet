@@ -7,6 +7,12 @@ Track which ships each of your EVE Online characters can fly, plus their skills,
 - **Ships view (the home page):** a grid of every hull against every character. A cell shows ✓ if that character can fly the hull now, or how long they need to train. Click a time to see the exact missing skills, including prerequisite chains, with SP and training time.
   - Filter by **★ Watchlist**, someone can fly, someone within 7 days, all hulls or nobody can fly. Also filter by **race** (Amarr, Caldari, Gallente, Minmatar, Triglavian, ORE, pirate/faction…) and by **class**.
   - Click ☆ on any ship to add it to your watchlist.
+- **Fits:** paste a ship fit in EFT format (EVE's fitting window → Copy to clipboard, Pyfa or zKillboard) and see which of your characters can fly it.
+  - Every pilot gets a status: can fly it, can fly the hull only, or can't fly the hull, plus the time to finish.
+  - For the selected pilot, every module, rig, subsystem, drone and loaded charge is marked ✓ or ✗, with the skills each ✗ is missing, and there's a full training order with prerequisites first.
+  - Drones and loaded ammo can each be left out of the check. Cargo is never checked.
+  - **Copy missing skills** copies the training list. **Make skill plan** turns the fit into a skill plan: hull and modules as Required, drones and ammo as Recommended.
+  - Fits are saved in this browser. Item requirements come from `data/items.json`, built by `python tools/gen_items.py data`.
 - **Skill plans:**
   - Each entry is a skill and level marked **Required** or **Recommended**. You can mark them per level, so `Drones IV` can be required and `Drones V` recommended.
   - Build a plan in the editor:

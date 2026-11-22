@@ -362,3 +362,17 @@ tr.is-rec td { background: #0f1a22; }
   .plan-edit-table td:first-child { display: none; }
   .add-box #addSkill { min-width: 0; width: 100%; }
 }
+
+/* ================================================================ fits (v1.4) */
+.fit-title { gap: 14px; }
+.fit-title img { border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); }
+.fit-group { margin-bottom: 10px; }
+.fit-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 6px 0 4px; }
+.fit-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+.fit-item span:nth-child(2) { flex: 1; }
+.fit-item .mark { font-weight: 700; }
+.fit-item.ok .mark { color: #6cc28a; }
+.fit-item.bad { color: var(--bad); }
+.fit-item.skip { color: var(--dim); }
+.blocked { display: grid; gap: 2px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+.blocked:last-child { border-bottom: 0; }

@@ -279,3 +279,77 @@ export function planToText(entries, nameOf) {
   if (!rec.length) return block(req);
   return `Required:\n${block(req)}\n\nRecommended:\n${block(rec)}`;
 }
+
+// ---------------------------------------------------------------- ship fits (EFT format)
+/**
+ * Reads an EFT fit (what EVE's fitting window, Pyfa and zKillboard copy):
+ *   [Ishtar, Ratting]
+ *   Drone Damage Amplifier II
+ *   Heavy Missile Launcher II, Scourge Heavy Missile
+ *   [Empty High slot]
+ *   Ogre II x5
+ * ITEMS: items.json ({name: [typeId, kindCode, reqs]}). SH: ships.json.
+ * Returns { ship: {id, name, q} | null, name, items: [{ id, name, kind, qty, reqs }], unknown: [line] }.
+ * kind: module | subsystem | charge (loaded) | drone | cargo
+ */
+export function parseFit(text, SH, ITEMS) {
+  const lines = String(text).split(/\r?\n/).map(l => l.trim());
+  const shipByName = new Map(Object.entries(SH).map(([id, s]) => [s.n.toLowerCase(), { id: Number(id), name: s.n, q: s.q }]));
+  const itemByName = new Map(Object.entries(ITEMS).map(([n, v]) => [n.toLowerCase(), { name: n, id: v[0], code: v[1], reqs: v[2] }]));
+  const out = { ship: null, name: '', items: [], unknown: [] };
+  let i = 0;
+  while (i < lines.length && !lines[i]) i++;
+  const head = (lines[i] || '').match(/^\[([^,\]]+)(?:,\s*(.*))?\]$/);
+  if (head) {
+    out.ship = shipByName.get(head[1].trim().toLowerCase()) || null;
+    out.name = (head[2] || '').trim();
+    if (!out.ship) out.unknown.push(`${head[1].trim()} (ship)`);
+    i++;
+  }
+  const add = (it, kind, qty = 1) => {
+    const prev = out.items.find(x => x.id === it.id && x.kind === kind);
+    if (prev) prev.qty += qty; else out.items.push({ id: it.id, name: it.name, kind, qty, reqs: it.reqs });
+  };
+  for (; i < lines.length; i++) {
+    let line = lines[i];
+    if (!line || /^\[empty .* slot\]$/i.test(line)) continue;
+    line = line.replace(/\s*\/offline$/i, '').trim();
+    const qm = line.match(/^(.*\S)\s+x(\d+)$/i);
+    if (qm) {                                   // "Hammerhead II x5": drone bay or cargo
+      const it = itemByName.get(qm[1].toLowerCase());
+      if (!it) { out.unknown.push(line); continue; }
+      add(it, it.code === 'd' || it.code === 'f' ? 'drone' : 'cargo', Number(qm[2]));
+      continue;
+    }
+    let it = itemByName.get(line.toLowerCase()), charge = null;
+    if (!it && line.includes(',')) {           // "Module, Loaded Charge"
+      const k = line.indexOf(',');
+      it = itemByName.get(line.slice(0, k).trim().toLowerCase());
+      charge = itemByName.get(line.slice(k + 1).trim().toLowerCase());
+      if (it && !charge) out.unknown.push(`${line.slice(k + 1).trim()} (charge)`);
+    }
+    if (!it) { out.unknown.push(line); continue; }
+    add(it, it.code === 's' ? 'subsystem' : it.code === 'c' ? 'cargo' : it.code === 'd' || it.code === 'f' ? 'drone' : 'module');
+    if (charge) add(charge, 'charge');
+  }
+  return out;
+}
+
+/**
+ * Skill requirements of a fit as plan entries [skillId, level, rec].
+ * The hull, modules and subsystems are required. Drones and loaded charges count as
+ * required when checking "can fly" (drones/charges options), or as recommended when
+ * optionalAsRec is set (used when turning a fit into a skill plan). Cargo is ignored.
+ */
+export function fitEntries(fit, { drones = true, charges = true, optionalAsRec = false } = {}) {
+  const req = new Map(), rec = new Map();
+  const put = (map, reqs) => { for (const [id, lvl] of reqs || []) map.set(id, Math.max(map.get(id) || 0, lvl)); };
+  if (fit.ship) put(req, fit.ship.q);
+  for (const it of fit.items) {
+    if (it.kind === 'module' || it.kind === 'subsystem') put(req, it.reqs);
+    else if ((it.kind === 'drone' && drones) || (it.kind === 'charge' && charges)) put(optionalAsRec ? rec : req, it.reqs);
+  }
+  const out = [...req].map(([id, lvl]) => [id, lvl, 0]);
+  for (const [id, lvl] of rec) if (lvl > (req.get(id) || 0)) out.push([id, lvl, 1]);
+  return out;
+}

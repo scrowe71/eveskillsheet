@@ -1,9 +1,9 @@
 import { SCOPES, buildSnapshot } from './shared/snapshot.js';
 import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shared/render.js';
-import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
+import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.3.0';   // bump on every release
+export const APP_VERSION = '1.4.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -27,6 +27,9 @@ const state = {
   selected: ls.get('ss.selected', 'ships'),
   watch: new Set(ls.get('ss.watch', [])),   // ship type ids on the watchlist
   mx: { q: '', filter: null, race: 'all', cls: 'all', open: null },   // ship matrix view
+  fits: ls.get('ss.fits', []),         // [{ id, name, eft, updated }]
+  fv: { sel: null, char: null, edit: null, drones: ls.get('ss.fitDrones', true), charges: ls.get('ss.fitCharges', true) },
+  items: null,                          // data/items.json, loaded the first time Fits opens
   plans: ls.get('ss.plans', []),       // [{ id, name, entries: [[skillId, level]], updated }]
   pv: { sel: null, char: null, edit: null, draft: null, showDone: false, scope: ls.get('ss.planScope', 'all') },          // skill plan view
   busy: null,
@@ -317,6 +320,11 @@ function renderAside() {
       <span class="info"><span class="top"><b>Ships</b></span>
       <small class="dim">Who can fly what · ${state.watch.size} on watchlist</small></span>
     </button>
+    <button class="char all ${state.selected === 'fits' ? 'sel' : ''}" data-sel="fits">
+      <span class="allicon">⚙</span>
+      <span class="info"><span class="top"><b>Fits</b></span>
+      <small class="dim">${state.fits.length} saved fit${state.fits.length === 1 ? '' : 's'} · who can fly them</small></span>
+    </button>
     <button class="char all ${state.selected === 'plans' ? 'sel' : ''}" data-sel="plans">
       <span class="allicon">☰</span>
       <span class="info"><span class="top"><b>Skill plans</b></span>
@@ -354,6 +362,10 @@ function renderMain() {
     return;
   }
   if (state.selected === 'ships') { renderMatrix(main); return; }
+  if (state.selected === 'fits') {
+    if (state.fv.edit && $('#fitText')) return;   // don't wipe a fit being pasted when a refresh finishes
+    renderFits(main); return;
+  }
   if (state.selected === 'plans') {
     if (state.pv.edit && $('#planName')) return;   // don't wipe a plan being edited when a refresh finishes
     renderPlans(main); return;
@@ -832,6 +844,205 @@ document.addEventListener('change', async e => {
   }
 });
 
+// ---------------------------------------------------------------- fits
+const KIND_LABEL = { module: 'Fitted', subsystem: 'Subsystems', charge: 'Loaded charges', drone: 'Drones & fighters', cargo: 'Cargo (not checked)' };
+
+async function loadItems() {
+  if (!state.items) state.items = await fetch('data/items.json').then(r => r.json());
+  return state.items;
+}
+
+const fitParsed = f => (f._parsed ??= parseFit(f.eft, state.data.SH, state.items));
+
+/** Everything a character needs for this fit, plus which items they can't use yet. */
+function fitStatus(fit, charId) {
+  const snap = state.snaps[charId];
+  if (!snap) return null;
+  const skills = effectiveSkills(snap);
+  const fv = state.fv;
+  const entries = fitEntries(fit, { drones: fv.drones, charges: fv.charges });
+  const gap = planGap(entries, skills, state.data.SK, snap.attrs);
+  const hull = fit.ship ? missingFor(fit.ship.q, skills, state.data.SK, snap.attrs) : [];
+  const blocked = fit.items.filter(it => it.kind !== 'cargo' && (it.kind !== 'drone' || fv.drones) && (it.kind !== 'charge' || fv.charges))
+    .map(it => ({ ...it, missing: missingFor(it.reqs, skills, state.data.SK, snap.attrs) })).filter(it => it.missing.length);
+  return { gap, hullOk: !hull.length, hull, blocked, ok: !gap.steps.length };
+}
+
+function fitEditor() {
+  const d = state.fv.edit;
+  return `
+    <section class="panel plan-edit">
+      <h3>${d.id ? 'Edit fit' : 'Add a fit'}</h3>
+      <label class="field">Paste a fit in EFT format <span class="dim">(in EVE: fitting window → Save → Copy to clipboard; or "Copy to EFT" in Pyfa / zKillboard)</span>
+        <textarea id="fitText" rows="16" spellcheck="false" placeholder="[Ishtar, Ratting]&#10;Drone Damage Amplifier II&#10;Drone Damage Amplifier II&#10;&#10;Large Shield Extender II&#10;...&#10;&#10;Ogre II x5">${esc(d.eft || '')}</textarea></label>
+      <label class="field">Name <span class="dim">(optional, taken from the fit's first line)</span><input id="fitName" value="${esc(d.name || '')}" maxlength="80"></label>
+      <div class="dim" id="fitParse"></div>
+      <div class="row-actions"><span style="flex:1"></span><button id="fitCancel">Cancel</button><button id="fitSave" class="primary">Save fit</button></div>
+    </section>`;
+}
+
+function updateFitHint() {
+  const el = $('#fitParse');
+  if (!el || !state.items) return;
+  const txt = $('#fitText').value;
+  if (!txt.trim()) { el.innerHTML = ''; return; }
+  const f = parseFit(txt, state.data.SH, state.items);
+  const count = k => f.items.filter(i => i.kind === k).reduce((n, i) => n + i.qty, 0);
+  el.innerHTML = (f.ship ? `<b class="good">${esc(f.ship.name)}</b>` : '<span class="warn">No ship found. The first line should look like [Ishtar, My fit]</span>') +
+    ` · ${count('module') + count('subsystem')} fitted · ${count('drone')} drones · ${f.items.filter(i => i.kind === 'charge').length} charge types` +
+    (f.unknown.length ? ` · <span class="warn">not recognised: ${esc(f.unknown.slice(0, 4).join(', '))}${f.unknown.length > 4 ? '…' : ''}</span>` : '');
+  if (!$('#fitName').value && f.name) $('#fitName').placeholder = f.name;
+}
+
+async function renderFits(main) {
+  if (!state.items) { main.innerHTML = '<div class="empty big">Loading item data…</div>'; await loadItems(); }
+  const fv = state.fv;
+  const fits = state.fits;
+  if (fv.sel && !fits.find(f => f.id === fv.sel)) fv.sel = null;
+  fv.sel ??= fits[0]?.id || null;
+  const saved = fits.find(f => f.id === fv.sel);
+  const chars = charList().filter(c => state.snaps[c.id]);
+  if (!fv.char || !state.snaps[fv.char]) fv.char = chars[0]?.id || null;
+
+  let body = '';
+  if (fv.edit) body = fitEditor();
+  else if (!saved) body = `<div class="empty big"><h2>Which of your pilots can fly this fit?</h2><p>Paste a ship fit from EVE, Pyfa or zKillboard and see which characters can fly it now, and what the others are missing.</p><button class="primary big" id="fitNew2">Add a fit</button></div>`;
+  else {
+    const fit = fitParsed(saved);
+    const rows = chars.map(c => ({ c, st: fitStatus(fit, c.id) }));
+    const cur = rows.find(r => r.c.id === fv.char);
+    const st = cur?.st;
+    const tm = m => m != null ? formatDuration(m * 60000) : '—';
+    const can = rows.filter(r => r.st.ok).length;
+    const kinds = ['module', 'subsystem', 'charge', 'drone', 'cargo'].filter(k => fit.items.some(i => i.kind === k));
+    const blockedIds = new Set((st?.blocked || []).map(b => `${b.kind}:${b.id}`));
+    let cum = 0;
+    body = `
+      <section class="plan-head">
+        <div class="item fit-title">${fit.ship ? `<img src="${IMG}/types/${fit.ship.id}/render?size=128" alt="" width="64" height="64">` : ''}
+          <div><h2>${esc(saved.name)}</h2><span class="dim">${esc(fit.ship?.name || 'Unknown ship')} · ${fit.items.filter(i => i.kind === 'module' || i.kind === 'subsystem').reduce((n, i) => n + i.qty, 0)} modules · ${can} of ${chars.length} pilot${chars.length === 1 ? '' : 's'} can fly it</span></div></div>
+        <div class="actions">
+          <button id="fitPlan" title="Create a skill plan with this fit's skills">Make skill plan</button>
+          <button id="fitCopy">Copy fit</button>
+          <button id="fitEdit">Edit</button>
+          <button id="fitDelete" class="danger">Delete</button>
+        </div>
+      </section>
+      ${fit.unknown.length ? `<div class="banner small">Not recognised, so not checked: ${esc(fit.unknown.join(', '))}</div>` : ''}
+      <div class="toolbar">
+        <label class="check"><input type="checkbox" id="fitDrones" ${fv.drones ? 'checked' : ''}> Include drones</label>
+        <label class="check"><input type="checkbox" id="fitCharges" ${fv.charges ? 'checked' : ''}> Include loaded ammo / charges</label>
+      </div>
+      ${chars.length ? `
+      <section class="pilot-chips">
+        ${rows.map(({ c, st: s }) => `<button class="pchip ${c.id === fv.char ? 'sel' : ''}" data-fit-char="${c.id}">
+          <img src="${IMG}/characters/${c.id}/portrait?size=64" alt="" width="28" height="28">
+          <span><b>${esc(c.name)}</b><small>${s.ok ? '<span class="good">✓ Can fly this fit</span>'
+            : `${s.hullOk ? 'Hull ✓ · ' : '<span class="warn">No hull</span> · '}${tm(s.gap.all.minutes)} to go`}</small></span>
+        </button>`).join('')}
+      </section>
+      <section class="stats">
+        <div class="stat"><span>${esc(cur.c.name)}</span><b class="${st.ok ? 'good' : 'warn'}">${st.ok ? 'Can fly it' : "Can't yet"}</b><small>${st.hullOk ? `can fly the ${esc(fit.ship?.name || 'hull')}` : `can't fly the ${esc(fit.ship?.name || 'hull')} yet`}</small></div>
+        <div class="stat"><span>Items not usable</span><b>${st.blocked.length}</b><small>of ${fit.items.filter(i => i.kind !== 'cargo').length} checked</small></div>
+        <div class="stat"><span>Skill levels to train</span><b>${st.gap.steps.length}</b><small>${formatSp(st.gap.all.sp)} SP</small></div>
+        <div class="stat"><span>Training time</span><b>${tm(st.gap.all.minutes)}</b><small>at current attributes</small></div>
+      </section>
+      <div class="two-col fit-cols">
+        <section class="panel">
+          <h3>Fit</h3>
+          ${kinds.map(k => `<div class="fit-group"><div class="dim fit-kind">${KIND_LABEL[k]}</div>
+            ${fit.items.filter(i => i.kind === k).map(i => {
+              const bad = blockedIds.has(`${i.kind}:${i.id}`);
+              return `<div class="fit-item ${bad ? 'bad' : k === 'cargo' || (k === 'drone' && !fv.drones) || (k === 'charge' && !fv.charges) ? 'skip' : 'ok'}">
+                <img src="${IMG}/types/${i.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">
+                <span>${i.qty > 1 ? `<b>${i.qty}×</b> ` : ''}${esc(i.name)}</span>
+                <span class="mark">${bad ? '✗' : k === 'cargo' || (k === 'drone' && !fv.drones) || (k === 'charge' && !fv.charges) ? '' : '✓'}</span></div>`;
+            }).join('')}</div>`).join('')}
+        </section>
+        <section class="panel">
+          <h3>What ${esc(cur.c.name)} is missing</h3>
+          ${st.blocked.length ? st.blocked.map(b => `<div class="blocked"><b>${esc(b.name)}</b><span class="dim">${b.missing.map(m => `${esc(m.name)} ${roman(m.to)}`).join(', ')}</span></div>`).join('')
+            : st.hullOk ? '<p class="good">Nothing. Every checked item can be used.</p>' : ''}
+          ${!st.hullOk ? `<div class="blocked"><b>${esc(fit.ship?.name || 'Hull')}</b><span class="dim">${st.hull.map(m => `${esc(m.name)} ${roman(m.to)}`).join(', ')}</span></div>` : ''}
+        </section>
+      </div>
+      ${st.gap.steps.length ? `
+      <div class="toolbar"><h3 class="sub" style="margin:0">Training order</h3><span style="flex:1"></span>
+        <button class="primary" id="fitCopyMissing">Copy missing skills</button></div>
+      <div class="scroll-x"><table class="queue plan-table">
+        <thead><tr><th>#</th><th>Skill</th><th class="num">SP</th><th class="num">Time</th><th class="num">Running total</th></tr></thead>
+        <tbody>${st.gap.steps.map((m, i) => { cum += m.minutes || 0; return `<tr>
+          <td class="dim">${i + 1}</td>
+          <td><div class="item"><img src="${IMG}/types/${m.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">${esc(m.name)} <b class="lvl">${roman(m.lvl)}</b>${m.prereq ? '<em class="tag">prerequisite</em>' : ''}</div></td>
+          <td class="num dim">${formatNum(Math.round(m.sp))}</td><td class="num">${tm(m.minutes)}</td><td class="num dim">${m.minutes != null ? formatDuration(cum * 60000) : ''}</td></tr>`; }).join('')}</tbody>
+      </table></div>` : ''}
+      <p class="hint">Checks the hull, every fitted module, rig and subsystem${fv.drones ? ', the drones' : ''}${fv.charges ? ' and loaded ammo' : ''}. Cargo isn't checked. Fits are saved in this browser.</p>`
+      : '<div class="empty big">Add a character to check fits against.</div>'}`;
+  }
+  main.innerHTML = `
+    <section class="plan-tabs">
+      ${fits.map(f => `<button class="${f.id === fv.sel && !fv.edit ? 'on' : ''}" data-fit="${f.id}">${esc(f.name)}</button>`).join('')}
+      <button id="fitNew" class="primary">+ Add fit</button>
+    </section>
+    ${body}`;
+  if (fv.edit) updateFitHint();
+}
+
+document.addEventListener('click', async e => {
+  if (state.selected !== 'fits') return;
+  const t = e.target, fv = state.fv;
+  const tab = t.closest('[data-fit]');
+  if (tab) { fv.sel = tab.dataset.fit; fv.edit = null; return renderFits($('#main')); }
+  const ch = t.closest('[data-fit-char]');
+  if (ch) { fv.char = Number(ch.dataset.fitChar); return renderFits($('#main')); }
+  const id = t.closest('button')?.id;
+  const saved = state.fits.find(f => f.id === fv.sel);
+  if (id === 'fitNew' || id === 'fitNew2') { fv.edit = { eft: '', name: '' }; return renderFits($('#main')); }
+  if (id === 'fitEdit') { fv.edit = { id: saved.id, eft: saved.eft, name: saved.name }; return renderFits($('#main')); }
+  if (id === 'fitCancel') { fv.edit = null; return renderFits($('#main')); }
+  if (id === 'fitSave') {
+    const eft = $('#fitText').value;
+    const f = parseFit(eft, state.data.SH, state.items);
+    if (!f.ship) { toast('No ship found. The first line of the fit should look like [Ishtar, My fit].', 'error'); return; }
+    const name = $('#fitName').value.trim() || f.name || f.ship.name;
+    if (fv.edit.id) Object.assign(state.fits.find(x => x.id === fv.edit.id), { name, eft, updated: Date.now(), _parsed: undefined });
+    else { const n = { id: Math.random().toString(36).slice(2, 10), name, eft, updated: Date.now() }; state.fits.push(n); fv.sel = n.id; }
+    saveFitsClean(); fv.edit = null; renderAside(); renderFits($('#main'));
+    toast(`Saved "${name}".`);
+    return;
+  }
+  if (id === 'fitDelete') {
+    const btn = t.closest('button');
+    if (btn.dataset.confirm !== '1') { btn.dataset.confirm = '1'; btn.textContent = 'Click again to delete'; setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.textContent = 'Delete'; } }, 3000); return; }
+    state.fits = state.fits.filter(f => f.id !== fv.sel); fv.sel = null;
+    saveFitsClean(); renderAside(); renderFits($('#main'));
+    return;
+  }
+  if (id === 'fitCopy') return copyText(saved.eft.trim(), t.closest('button'));
+  if (id === 'fitCopyMissing') {
+    const st = fitStatus(fitParsed(saved), fv.char);
+    return copyText(planText(st.gap.steps.map(s => [s.id, s.lvl, s.name])), t.closest('button'));
+  }
+  if (id === 'fitPlan') {
+    const fit = fitParsed(saved);
+    const entries = fitEntries(fit, { drones: true, charges: true, optionalAsRec: true });
+    const p = { id: Math.random().toString(36).slice(2, 10), name: `${saved.name} (${fit.ship?.name || 'fit'})`, entries, updated: Date.now() };
+    state.plans.push(p); savePlans();
+    state.pv.sel = p.id; state.pv.char = fv.char; state.pv.edit = null;
+    select('plans');
+    toast(`Skill plan "${p.name}" created: hull and modules are Required, drones and ammo Recommended.`);
+  }
+});
+
+// _parsed is a cache; never store it
+const saveFitsClean = () => ls.set('ss.fits', state.fits.map(({ _parsed, ...f }) => f));
+
+document.addEventListener('input', e => { if (e.target.id === 'fitText') updateFitHint(); });
+document.addEventListener('change', e => {
+  if (e.target.id === 'fitDrones') { state.fv.drones = e.target.checked; ls.set('ss.fitDrones', state.fv.drones); renderFits($('#main')); }
+  if (e.target.id === 'fitCharges') { state.fv.charges = e.target.checked; ls.set('ss.fitCharges', state.fv.charges); renderFits($('#main')); }
+});
+
 function render() {
   renderAside();
   renderMain();
@@ -840,7 +1051,7 @@ function render() {
 
 // ---------------------------------------------------------------- events
 function select(id) {
-  state.selected = ['all', 'ships', 'plans'].includes(id) ? id : Number(id);
+  state.selected = ['all', 'ships', 'plans', 'fits'].includes(id) ? id : Number(id);
   ls.set('ss.selected', state.selected);
   render();
   window.scrollTo({ top: 0 });

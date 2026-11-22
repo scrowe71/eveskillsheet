@@ -290,7 +290,7 @@ export function planToText(entries, nameOf) {
  *   Ogre II x5
  * ITEMS: items.json ({name: [typeId, kindCode, reqs]}). SH: ships.json.
  * Returns { ship: {id, name, q} | null, name, items: [{ id, name, kind, qty, reqs }], unknown: [line] }.
- * kind: module | subsystem | charge (loaded) | drone | cargo
+ * kind: module | subsystem | charge (loaded) | drone | implant | booster | cargo
  */
 export function parseFit(text, SH, ITEMS) {
   const lines = String(text).split(/\r?\n/).map(l => l.trim());
@@ -329,7 +329,7 @@ export function parseFit(text, SH, ITEMS) {
       if (it && !charge) out.unknown.push(`${line.slice(k + 1).trim()} (charge)`);
     }
     if (!it) { out.unknown.push(line); continue; }
-    add(it, it.code === 's' ? 'subsystem' : it.code === 'c' ? 'cargo' : it.code === 'd' || it.code === 'f' ? 'drone' : 'module');
+    add(it, it.code === 's' ? 'subsystem' : it.code === 'c' ? 'cargo' : it.code === 'd' || it.code === 'f' ? 'drone' : it.code === 'i' ? 'implant' : it.code === 'b' ? 'booster' : 'module');
     if (charge) add(charge, 'charge');
   }
   return out;
@@ -337,17 +337,17 @@ export function parseFit(text, SH, ITEMS) {
 
 /**
  * Skill requirements of a fit as plan entries [skillId, level, rec].
- * The hull, modules and subsystems are required. Drones and loaded charges count as
- * required when checking "can fly" (drones/charges options), or as recommended when
+ * The hull, modules and subsystems are required. Drones, loaded charges, implants and boosters count as
+ * required when checking "can fly" (drones/charges/implants options), or as recommended when
  * optionalAsRec is set (used when turning a fit into a skill plan). Cargo is ignored.
  */
-export function fitEntries(fit, { drones = true, charges = true, optionalAsRec = false } = {}) {
+export function fitEntries(fit, { drones = true, charges = true, implants = true, optionalAsRec = false } = {}) {
   const req = new Map(), rec = new Map();
   const put = (map, reqs) => { for (const [id, lvl] of reqs || []) map.set(id, Math.max(map.get(id) || 0, lvl)); };
   if (fit.ship) put(req, fit.ship.q);
   for (const it of fit.items) {
     if (it.kind === 'module' || it.kind === 'subsystem') put(req, it.reqs);
-    else if ((it.kind === 'drone' && drones) || (it.kind === 'charge' && charges)) put(optionalAsRec ? rec : req, it.reqs);
+    else if ((it.kind === 'drone' && drones) || (it.kind === 'charge' && charges) || ((it.kind === 'implant' || it.kind === 'booster') && implants)) put(optionalAsRec ? rec : req, it.reqs);
   }
   const out = [...req].map(([id, lvl]) => [id, lvl, 0]);
   for (const [id, lvl] of rec) if (lvl > (req.get(id) || 0)) out.push([id, lvl, 1]);

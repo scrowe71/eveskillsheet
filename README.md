@@ -10,8 +10,8 @@ Track which ships each of your EVE Online characters can fly, plus their skills,
 - **Fits:** paste a ship fit in EFT format (EVE's fitting window → Copy to clipboard, Pyfa or zKillboard) and see which of your characters can fly it.
   - Every pilot gets a status: can fly it, can fly the hull only, or can't fly the hull, plus the time to finish.
   - For the selected pilot, every module, rig, subsystem, drone and loaded charge is marked ✓ or ✗, with the skills each ✗ is missing, and there's a full training order with prerequisites first.
-  - Drones and loaded ammo can each be left out of the check. Cargo is never checked.
-  - **Copy missing skills** copies the training list. **Make skill plan** turns the fit into a skill plan: hull and modules as Required, drones and ammo as Recommended.
+  - Implants and boosters are recognised too. Drones, loaded ammo, and implants & boosters each have a switch to leave them out of the check. Cargo is never checked.
+  - **Copy missing skills** copies the training list. **Make skill plan** turns the fit into a skill plan: hull and modules as Required; drones, ammo, implants and boosters as Recommended.
   - Fits are saved in this browser. Item requirements come from `data/items.json`, built by `python tools/gen_items.py data`.
 - **Skill plans:**
   - Each entry is a skill and level marked **Required** or **Recommended**. You can mark them per level, so `Drones IV` can be required and `Drones V` recommended.

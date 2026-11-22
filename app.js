@@ -3,7 +3,7 @@ import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shar
 import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.4.0';   // bump on every release
+export const APP_VERSION = '1.4.1';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -28,7 +28,7 @@ const state = {
   watch: new Set(ls.get('ss.watch', [])),   // ship type ids on the watchlist
   mx: { q: '', filter: null, race: 'all', cls: 'all', open: null },   // ship matrix view
   fits: ls.get('ss.fits', []),         // [{ id, name, eft, updated }]
-  fv: { sel: null, char: null, edit: null, drones: ls.get('ss.fitDrones', true), charges: ls.get('ss.fitCharges', true) },
+  fv: { sel: null, char: null, edit: null, drones: ls.get('ss.fitDrones', true), charges: ls.get('ss.fitCharges', true), implants: ls.get('ss.fitImplants', true) },
   items: null,                          // data/items.json, loaded the first time Fits opens
   plans: ls.get('ss.plans', []),       // [{ id, name, entries: [[skillId, level]], updated }]
   pv: { sel: null, char: null, edit: null, draft: null, showDone: false, scope: ls.get('ss.planScope', 'all') },          // skill plan view
@@ -845,7 +845,7 @@ document.addEventListener('change', async e => {
 });
 
 // ---------------------------------------------------------------- fits
-const KIND_LABEL = { module: 'Fitted', subsystem: 'Subsystems', charge: 'Loaded charges', drone: 'Drones & fighters', cargo: 'Cargo (not checked)' };
+const KIND_LABEL = { module: 'Fitted', subsystem: 'Subsystems', charge: 'Loaded charges', drone: 'Drones & fighters', implant: 'Implants', booster: 'Boosters', cargo: 'Cargo (not checked)' };
 
 async function loadItems() {
   if (!state.items) state.items = await fetch('data/items.json').then(r => r.json());
@@ -854,16 +854,20 @@ async function loadItems() {
 
 const fitParsed = f => (f._parsed ??= parseFit(f.eft, state.data.SH, state.items));
 
+/** Is this kind of item part of the check with the current switches? */
+const kindChecked = k => k !== 'cargo' && (k !== 'drone' || state.fv.drones) && (k !== 'charge' || state.fv.charges) &&
+  ((k !== 'implant' && k !== 'booster') || state.fv.implants);
+
 /** Everything a character needs for this fit, plus which items they can't use yet. */
 function fitStatus(fit, charId) {
   const snap = state.snaps[charId];
   if (!snap) return null;
   const skills = effectiveSkills(snap);
   const fv = state.fv;
-  const entries = fitEntries(fit, { drones: fv.drones, charges: fv.charges });
+  const entries = fitEntries(fit, { drones: fv.drones, charges: fv.charges, implants: fv.implants });
   const gap = planGap(entries, skills, state.data.SK, snap.attrs);
   const hull = fit.ship ? missingFor(fit.ship.q, skills, state.data.SK, snap.attrs) : [];
-  const blocked = fit.items.filter(it => it.kind !== 'cargo' && (it.kind !== 'drone' || fv.drones) && (it.kind !== 'charge' || fv.charges))
+  const blocked = fit.items.filter(it => kindChecked(it.kind))
     .map(it => ({ ...it, missing: missingFor(it.reqs, skills, state.data.SK, snap.attrs) })).filter(it => it.missing.length);
   return { gap, hullOk: !hull.length, hull, blocked, ok: !gap.steps.length };
 }
@@ -890,6 +894,7 @@ function updateFitHint() {
   const count = k => f.items.filter(i => i.kind === k).reduce((n, i) => n + i.qty, 0);
   el.innerHTML = (f.ship ? `<b class="good">${esc(f.ship.name)}</b>` : '<span class="warn">No ship found. The first line should look like [Ishtar, My fit]</span>') +
     ` · ${count('module') + count('subsystem')} fitted · ${count('drone')} drones · ${f.items.filter(i => i.kind === 'charge').length} charge types` +
+    (count('implant') + count('booster') ? ` · ${count('implant')} implants · ${count('booster')} boosters` : '') +
     (f.unknown.length ? ` · <span class="warn">not recognised: ${esc(f.unknown.slice(0, 4).join(', '))}${f.unknown.length > 4 ? '…' : ''}</span>` : '');
   if (!$('#fitName').value && f.name) $('#fitName').placeholder = f.name;
 }
@@ -914,7 +919,7 @@ async function renderFits(main) {
     const st = cur?.st;
     const tm = m => m != null ? formatDuration(m * 60000) : '—';
     const can = rows.filter(r => r.st.ok).length;
-    const kinds = ['module', 'subsystem', 'charge', 'drone', 'cargo'].filter(k => fit.items.some(i => i.kind === k));
+    const kinds = ['module', 'subsystem', 'charge', 'drone', 'implant', 'booster', 'cargo'].filter(k => fit.items.some(i => i.kind === k));
     const blockedIds = new Set((st?.blocked || []).map(b => `${b.kind}:${b.id}`));
     let cum = 0;
     body = `
@@ -932,6 +937,7 @@ async function renderFits(main) {
       <div class="toolbar">
         <label class="check"><input type="checkbox" id="fitDrones" ${fv.drones ? 'checked' : ''}> Include drones</label>
         <label class="check"><input type="checkbox" id="fitCharges" ${fv.charges ? 'checked' : ''}> Include loaded ammo / charges</label>
+        <label class="check"><input type="checkbox" id="fitImplants" ${fv.implants ? 'checked' : ''}> Include implants &amp; boosters</label>
       </div>
       ${chars.length ? `
       <section class="pilot-chips">
@@ -943,7 +949,7 @@ async function renderFits(main) {
       </section>
       <section class="stats">
         <div class="stat"><span>${esc(cur.c.name)}</span><b class="${st.ok ? 'good' : 'warn'}">${st.ok ? 'Can fly it' : "Can't yet"}</b><small>${st.hullOk ? `can fly the ${esc(fit.ship?.name || 'hull')}` : `can't fly the ${esc(fit.ship?.name || 'hull')} yet`}</small></div>
-        <div class="stat"><span>Items not usable</span><b>${st.blocked.length}</b><small>of ${fit.items.filter(i => i.kind !== 'cargo').length} checked</small></div>
+        <div class="stat"><span>Items not usable</span><b>${st.blocked.length}</b><small>of ${fit.items.filter(i => kindChecked(i.kind)).length} checked</small></div>
         <div class="stat"><span>Skill levels to train</span><b>${st.gap.steps.length}</b><small>${formatSp(st.gap.all.sp)} SP</small></div>
         <div class="stat"><span>Training time</span><b>${tm(st.gap.all.minutes)}</b><small>at current attributes</small></div>
       </section>
@@ -953,10 +959,10 @@ async function renderFits(main) {
           ${kinds.map(k => `<div class="fit-group"><div class="dim fit-kind">${KIND_LABEL[k]}</div>
             ${fit.items.filter(i => i.kind === k).map(i => {
               const bad = blockedIds.has(`${i.kind}:${i.id}`);
-              return `<div class="fit-item ${bad ? 'bad' : k === 'cargo' || (k === 'drone' && !fv.drones) || (k === 'charge' && !fv.charges) ? 'skip' : 'ok'}">
+              return `<div class="fit-item ${bad ? 'bad' : kindChecked(k) ? 'ok' : 'skip'}">
                 <img src="${IMG}/types/${i.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">
                 <span>${i.qty > 1 ? `<b>${i.qty}×</b> ` : ''}${esc(i.name)}</span>
-                <span class="mark">${bad ? '✗' : k === 'cargo' || (k === 'drone' && !fv.drones) || (k === 'charge' && !fv.charges) ? '' : '✓'}</span></div>`;
+                <span class="mark">${bad ? '✗' : kindChecked(k) ? '✓' : ''}</span></div>`;
             }).join('')}</div>`).join('')}
         </section>
         <section class="panel">
@@ -976,7 +982,7 @@ async function renderFits(main) {
           <td><div class="item"><img src="${IMG}/types/${m.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">${esc(m.name)} <b class="lvl">${roman(m.lvl)}</b>${m.prereq ? '<em class="tag">prerequisite</em>' : ''}</div></td>
           <td class="num dim">${formatNum(Math.round(m.sp))}</td><td class="num">${tm(m.minutes)}</td><td class="num dim">${m.minutes != null ? formatDuration(cum * 60000) : ''}</td></tr>`; }).join('')}</tbody>
       </table></div>` : ''}
-      <p class="hint">Checks the hull, every fitted module, rig and subsystem${fv.drones ? ', the drones' : ''}${fv.charges ? ' and loaded ammo' : ''}. Cargo isn't checked. Fits are saved in this browser.</p>`
+      <p class="hint">Checks the hull and every fitted module, rig and subsystem${[fv.drones && 'drones', fv.charges && 'loaded ammo', fv.implants && 'implants and boosters'].filter(Boolean).map(x => `, ${x}`).join('')}. Cargo isn't checked. Fits are saved in this browser.</p>`
       : '<div class="empty big">Add a character to check fits against.</div>'}`;
   }
   main.innerHTML = `
@@ -1030,7 +1036,7 @@ document.addEventListener('click', async e => {
     state.plans.push(p); savePlans();
     state.pv.sel = p.id; state.pv.char = fv.char; state.pv.edit = null;
     select('plans');
-    toast(`Skill plan "${p.name}" created: hull and modules are Required, drones and ammo Recommended.`);
+    toast(`Skill plan "${p.name}" created: hull and modules are Required; drones, ammo, implants and boosters Recommended.`);
   }
 });
 
@@ -1041,6 +1047,7 @@ document.addEventListener('input', e => { if (e.target.id === 'fitText') updateF
 document.addEventListener('change', e => {
   if (e.target.id === 'fitDrones') { state.fv.drones = e.target.checked; ls.set('ss.fitDrones', state.fv.drones); renderFits($('#main')); }
   if (e.target.id === 'fitCharges') { state.fv.charges = e.target.checked; ls.set('ss.fitCharges', state.fv.charges); renderFits($('#main')); }
+  if (e.target.id === 'fitImplants') { state.fv.implants = e.target.checked; ls.set('ss.fitImplants', state.fv.implants); renderFits($('#main')); }
 });
 
 function render() {

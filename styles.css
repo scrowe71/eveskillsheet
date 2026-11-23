@@ -383,3 +383,27 @@ tr.is-rec td { background: #0f1a22; }
 .who-box .me img { border-radius: 4px; }
 body.logged-out #addBtn, body.logged-out #refreshBtn, body.logged-out aside { display: none; }
 body.logged-out .layout { grid-template-columns: 1fr; }
+
+/* ================================================================ fit / plan picker (v2.1) */
+.picker { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.pick { position: relative; min-width: 0; flex: 0 1 560px; }
+.pick-btn { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 7px 12px; }
+.pick-btn img, .pick-row img { border-radius: 4px; flex: none; }
+.pick-btn .pick-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-sub { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.pick-btn .caret { margin-left: auto; color: var(--dim); }
+.pick-step { padding: 7px 11px; font-size: 16px; line-height: 1; }
+.pick-count { font-size: 12px; white-space: nowrap; }
+.pick-pop { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; width: max(100%, 380px); max-width: 92vw;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 30px #000a; padding: 8px; }
+.pick-q { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; margin-bottom: 6px; }
+.pick-list { max-height: min(60vh, 480px); overflow-y: auto; }
+.pick-gh { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--dim); padding: 8px 8px 4px; }
+.pick-gh i { font-style: normal; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 0 6px; margin-left: 4px; }
+.pick-row { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 8px; }
+.pick-row:hover { background: var(--panel-2); }
+.pick-row.on { background: #241a0c; }
+.pick-row .pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-row b.good { color: #5fc48a; }
+.pick-none { color: var(--dim); padding: 10px; text-align: center; }
+@media (max-width: 760px) { .pick { flex: 1 1 100%; order: -1; } }

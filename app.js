@@ -3,7 +3,7 @@ import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shar
 import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '2.0.1';   // bump on every release
+export const APP_VERSION = '2.1.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -680,6 +680,63 @@ function updateParseHint() {
 const scopeSteps = g => state.pv.scope === 'req' ? g.steps.filter(s => !s.rec) : g.steps;
 const tm = m => m != null ? formatDuration(m * 60000) : '—';
 
+// ---------------------------------------------------------------- picker (fits and skill plans)
+// One compact control instead of a row of tabs: current choice, a searchable drop-down grouped by ship,
+// and previous/next buttons. Rows carry the same data-fit / data-plan attributes the tabs used.
+const pickerUi = { open: null };
+function picker({ kind, attr, items, sel, noun, addId, addLabel }) {
+  // Same order as the drop-down (by ship, then name), so ‹ › and "3 of 11" match what the list shows.
+  items = [...items].sort((a, b) => (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
+  const i = items.findIndex(x => x.id === sel), cur = items[i];
+  const prev = items[(i - 1 + items.length) % items.length], next = items[(i + 1) % items.length];
+  const open = pickerUi.open === kind;
+  const row = x => `<button class="pick-row${x.id === sel ? ' on' : ''}" data-${attr}="${x.id}" data-q="${esc(`${x.name} ${x.group || ''} ${x.sub || ''}`.toLowerCase())}">
+      ${x.icon ? `<img src="${x.icon}" alt="" width="28" height="28" loading="lazy">` : ''}<span class="pick-name">${esc(x.name)}</span>${x.sub ? `<span class="pick-sub">${x.sub}</span>` : ''}</button>`;
+  const groups = new Map();
+  for (const x of items) { const g = x.group || ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(x); }
+  const list = [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([g, xs]) =>
+    `<div class="pick-group">${g ? `<div class="pick-gh">${esc(g)} <i>${xs.length}</i></div>` : ''}${xs.map(row).join('')}</div>`).join('');
+  return `<section class="picker" data-picker="${kind}">
+    ${items.length ? `<div class="pick">
+      <button class="pick-btn" data-pick-toggle="${kind}" aria-expanded="${open}" title="Choose a ${noun}">
+        ${cur?.icon ? `<img src="${cur.icon}" alt="" width="24" height="24">` : ''}<span class="pick-name">${cur ? esc(cur.name) : `Choose a ${noun}`}</span>${cur?.group ? `<span class="pick-sub">${esc(cur.group)}</span>` : ''}<span class="caret">▾</span></button>
+      ${open ? `<div class="pick-pop"><input class="pick-q" type="search" placeholder="Search ${items.length} ${noun}s…" autocomplete="off">
+        <div class="pick-list">${list}</div><div class="pick-none" hidden>No ${noun}s match.</div></div>` : ''}
+    </div>
+    ${items.length > 1 ? `<button class="pick-step" data-${attr}="${prev.id}" title="Previous ${noun}">‹</button><button class="pick-step" data-${attr}="${next.id}" title="Next ${noun}">›</button>` : ''}
+    <span class="dim pick-count">${i + 1 > 0 ? `${i + 1} of ${items.length}` : `${items.length} ${noun}s`}</span>` : ''}
+    <span style="flex:1"></span><button id="${addId}" class="primary">${addLabel}</button>
+  </section>`;
+}
+// Clicking a row (or anywhere else) closes the drop-down; this runs before the fit/plan handlers.
+document.addEventListener('click', e => {
+  const tog = e.target.closest('[data-pick-toggle]');
+  if (tog) {
+    pickerUi.open = pickerUi.open === tog.dataset.pickToggle ? null : tog.dataset.pickToggle;
+    if (state.selected === 'fits') renderFits($('#main')); else renderPlans($('#main'));
+    if (pickerUi.open) $('.pick-q')?.focus();
+    e.stopImmediatePropagation(); return;
+  }
+  if (pickerUi.open && !e.target.closest('.pick-pop')) { pickerUi.open = null; $('.pick-pop')?.remove(); $('.pick-btn')?.setAttribute('aria-expanded', 'false'); }
+  if (e.target.closest('.pick-row')) pickerUi.open = null;
+}, true);
+document.addEventListener('input', e => {
+  if (!e.target.matches('.pick-q')) return;
+  const q = e.target.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let shown = 0;
+  document.querySelectorAll('.pick-group').forEach(g => {
+    let n = 0;
+    g.querySelectorAll('.pick-row').forEach(r => { const ok = q.every(w => r.dataset.q.includes(w)); r.hidden = !ok; if (ok) n++; });
+    g.hidden = !n; shown += n;
+  });
+  $('.pick-none').hidden = !!shown;
+});
+document.addEventListener('keydown', e => {
+  if (!pickerUi.open) return;
+  if (e.key === 'Escape') { pickerUi.open = null; $('.pick-pop')?.remove(); return; }
+  if (e.key === 'Enter' && e.target.matches('.pick-q')) { e.preventDefault(); [...document.querySelectorAll('.pick-row')].find(r => !r.hidden)?.click(); }
+});
+
 function renderPlans(main) {
   const pv = state.pv;
   const plans = state.plans;
@@ -753,15 +810,13 @@ function renderPlans(main) {
         </tbody>
       </table></div>` : `<div class="empty big"><span class="good">✓</span> ${esc(cur.c.name)} has every ${pv.scope === 'req' ? 'required ' : ''}skill in this plan.</div>`}
       ${doneRows.length ? `<h3 class="sub">Already trained</h3><div class="done-list">${doneRows.map(([id, l, rec]) => `<span>✓ ${esc(skName(id))} ${roman(l)}${rec ? ' <small class="dim">(rec)</small>' : ''}</span>`).join('')}</div>` : ''}
-      <p class="hint">Required skills (and the prerequisites they need) are listed first, then recommended ones. "Copy missing skills" gives one skill level per line (e.g. <code>Drones IV</code>) for the scope you picked above. Plans are saved in this browser; use Copy plan to move one to another device.</p>`
+      <p class="hint">Required skills (and the prerequisites they need) are listed first, then recommended ones. "Copy missing skills" gives one skill level per line (e.g. <code>Drones IV</code>) for the scope you picked above. Plans are saved to your account.</p>`
       : '<div class="empty big">Add a character to compare plans against.</div>'}`;
   }
 
   main.innerHTML = `
-    <section class="plan-tabs">
-      ${plans.map(p => `<button class="${p.id === pv.sel && !pv.edit ? 'on' : ''}" data-plan="${p.id}">${esc(p.name)}</button>`).join('')}
-      <button id="planNew" class="primary">+ New plan</button>
-    </section>
+    ${picker({ kind: 'plans', attr: 'plan', noun: 'plan', addId: 'planNew', addLabel: '+ New plan', sel: pv.edit ? null : pv.sel,
+      items: plans.map(p => ({ id: p.id, name: p.name, sub: `${p.entries.length} skills` })) })}
     ${body}`;
   if (pv.edit) updateParseHint();
 }
@@ -1023,14 +1078,14 @@ async function renderFits(main) {
           <td><div class="item"><img src="${IMG}/types/${m.id}/icon?size=32" alt="" width="22" height="22" loading="lazy">${esc(m.name)} <b class="lvl">${roman(m.lvl)}</b>${m.prereq ? '<em class="tag">prerequisite</em>' : ''}</div></td>
           <td class="num dim">${formatNum(Math.round(m.sp))}</td><td class="num">${tm(m.minutes)}</td><td class="num dim">${m.minutes != null ? formatDuration(cum * 60000) : ''}</td></tr>`; }).join('')}</tbody>
       </table></div>` : ''}
-      <p class="hint">Checks the hull and every fitted module, rig and subsystem${[fv.drones && 'drones', fv.charges && 'loaded ammo', fv.implants && 'implants and boosters'].filter(Boolean).map(x => `, ${x}`).join('')}. Cargo isn't checked. Fits are saved in this browser.</p>`
+      <p class="hint">Checks the hull and every fitted module, rig and subsystem${[fv.drones && 'drones', fv.charges && 'loaded ammo', fv.implants && 'implants and boosters'].filter(Boolean).map(x => `, ${x}`).join('')}. Cargo isn't checked. Fits are saved to your account.</p>`
       : '<div class="empty big">Add a character to check fits against.</div>'}`;
   }
+  // Who can fly each fit is only worked out while the drop-down is open.
+  const flyable = f => { const fit = fitParsed(f); const n = chars.filter(c => fitStatus(fit, c.id)?.ok).length; return `<b class="${n ? 'good' : 'dim'}">${n}/${chars.length}</b> can fly`; };
   main.innerHTML = `
-    <section class="plan-tabs">
-      ${fits.map(f => `<button class="${f.id === fv.sel && !fv.edit ? 'on' : ''}" data-fit="${f.id}">${esc(f.name)}</button>`).join('')}
-      <button id="fitNew" class="primary">+ Add fit</button>
-    </section>
+    ${picker({ kind: 'fits', attr: 'fit', noun: 'fit', addId: 'fitNew', addLabel: '+ Add fit', sel: fv.edit ? null : fv.sel,
+      items: fits.map(f => { const sh = fitParsed(f).ship; return { id: f.id, name: f.name, group: sh?.name || 'Unknown ship', icon: sh ? `${IMG}/types/${sh.id}/icon?size=32` : '', sub: pickerUi.open === 'fits' && chars.length ? flyable(f) : '' }; }) })}
     ${body}`;
   if (fv.edit) updateFitHint();
 }

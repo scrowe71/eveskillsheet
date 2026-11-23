@@ -355,3 +355,38 @@ export function fitEntries(fit, { drones = true, charges = true, implants = true
   for (const [id, lvl] of rec) if (lvl > (req.get(id) || 0)) out.push([id, lvl, 1]);
   return out;
 }
+
+// ---------------------------------------------------------------- skill injectors
+// Large Skill Injector: SP gained depends on the character's total SP (allocated + unallocated) at the moment of use.
+// A Small Skill Injector gives a fifth of that. A Skill Extractor turns 500,000 SP from a donor into one Large Skill Injector.
+export const INJECTOR_TYPES = { large: 40520, small: 45635, extractor: 40519 };
+export const INJECTOR_BRACKETS = [[5e6, 500000], [50e6, 400000], [80e6, 300000], [Infinity, 150000]];
+export const largeYield = total => INJECTOR_BRACKETS.find(([max]) => total < max)[1];
+
+/**
+ * How many injectors it takes to add `need` SP to a character that has `total` SP, used one at a time.
+ * Returns the large-only answer and a cheaper mix (large ones, then small ones for the last part) with
+ * how many of each bracket get used, and how much SP is left over beyond what was needed.
+ */
+export function injectorPlan(need, total) {
+  need = Math.max(0, Math.round(need));
+  const run = (useSmall) => {
+    let t = total, got = 0, large = 0, small = 0;
+    const by = new Map();
+    while (got < need) {
+      const per = largeYield(t);
+      const left = need - got;
+      // Small ones only once a whole large one would overshoot by more than a small one gives.
+      if (useSmall && left <= per - per / 5) {
+        const sp = per / 5; small++; got += sp; t += sp;
+        const k = `small@${sp}`; by.set(k, (by.get(k) || 0) + 1);
+      } else {
+        large++; got += per; t += per;
+        const k = `large@${per}`; by.set(k, (by.get(k) || 0) + 1);
+      }
+      if (large + small > 100000) break; // safety
+    }
+    return { large, small, got, waste: got - need, endTotal: t, by: [...by].map(([k, n]) => { const [kind, sp] = k.split('@'); return { kind, sp: Number(sp), n }; }) };
+  };
+  return { need, largeOnly: run(false), mixed: run(true) };
+}

@@ -407,3 +407,15 @@ body.logged-out .layout { grid-template-columns: 1fr; }
 .pick-row b.good { color: #5fc48a; }
 .pick-none { color: var(--dim); padding: 10px; text-align: center; }
 @media (max-width: 760px) { .pick { flex: 1 1 100%; order: -1; } }
+
+/* ================================================================ skill injectors (v2.2) */
+.inj { margin-top: 16px; }
+.inj h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
+.inj-head { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.inj-head > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; }
+.inj-head span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+.inj-head b { font-size: 20px; color: var(--accent); }
+.inj-head small { color: var(--dim); font-size: 12px; }
+.inj-table tr.best td { background: #241a0c; }
+.inj-table small { color: var(--dim); }
+.inj-table td:nth-child(2) { white-space: nowrap; }

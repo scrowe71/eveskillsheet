@@ -1,9 +1,9 @@
 import { SCOPES, buildSnapshot } from './shared/snapshot.js';
 import { renderSheet, tickCountdowns, until, starBtn, missingList } from './shared/render.js';
-import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc } from './shared/lib.js';
+import { effectiveSkills, shipStatus, shipRace, RACES, formatDuration, parsePlan, planGap, planText, planToText, addEntry, parseFit, fitEntries, missingFor, queueSummary, formatSp, formatNum, timeAgo, roman, esc, injectorPlan, largeYield, INJECTOR_TYPES } from './shared/lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '2.1.0';   // bump on every release
+export const APP_VERSION = '2.2.0';   // bump on every release
 const CFG = window.SKILLSHEET_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -680,6 +680,71 @@ function updateParseHint() {
 const scopeSteps = g => state.pv.scope === 'req' ? g.steps.filter(s => !s.rec) : g.steps;
 const tm = m => m != null ? formatDuration(m * 60000) : '—';
 
+// ---------------------------------------------------------------- skill injector costs (skill plans)
+const iskFmt = n => n == null || !isFinite(n) ? '—' : Math.abs(n) >= 1e9 ? `${(n / 1e9).toFixed(2)}b` : Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(1)}m` : formatNum(Math.round(n));
+let injPrices = ls.get('ss.injPrices', null), injLoading = false;
+/** Jita prices for injectors and extractors: lowest sell (buy it now) and highest buy order, refreshed hourly. */
+async function loadInjPrices() {
+  if (injLoading || (injPrices && Date.now() - injPrices.at < 3600e3)) return;
+  injLoading = true;
+  try {
+    const out = { at: Date.now() };
+    for (const [k, id] of Object.entries(INJECTOR_TYPES)) {
+      const orders = await esi(`/markets/10000002/orders/?order_type=all&type_id=${id}`);
+      const jita = orders.filter(o => o.location_id === 60003760);
+      const set = jita.length ? jita : orders; // Jita 4-4, else anywhere in The Forge
+      const sells = set.filter(o => !o.is_buy_order).map(o => o.price), buys = set.filter(o => o.is_buy_order).map(o => o.price);
+      out[k] = { sell: sells.length ? Math.min(...sells) : null, buy: buys.length ? Math.max(...buys) : null };
+    }
+    injPrices = out; ls.set('ss.injPrices', out);
+  } catch (e) { console.warn('injector prices', e); }
+  injLoading = false;
+  if (state.selected === 'plans') renderPlans($('#main'));
+}
+
+/** Panel: injectors needed for the missing SP (with diminishing returns), and the ISK to buy them or make them. */
+function injectorPanel(steps, snap, name) {
+  const need = steps.reduce((n, m) => n + m.sp, 0);
+  if (!need) return '';
+  loadInjPrices();
+  const unalloc = snap.unallocSp || 0;
+  const total = (snap.totalSp || 0) + unalloc; // diminishing returns go by allocated + unallocated SP
+  const toInject = Math.max(0, need - unalloc);
+  const p = injectorPlan(toInject, total);
+  const P = injPrices;
+  const cost = (n, k, side) => P?.[k]?.[side] != null ? n * P[k][side] : null;
+  const both = (l, sm, side) => { const a = cost(l, 'large', side), b = cost(sm, 'small', side); return a == null || (sm && b == null) ? null : a + (b || 0); };
+  const L = p.largeOnly, M = p.mixed;
+  const mixDiffers = M.small > 0 && (M.large !== L.large);
+  // Making your own: each extractor makes one large injector (a large one splits into 5 small ones).
+  const ext = Math.min(L.large, M.large + Math.ceil(M.small / 5));
+  const rows = [
+    { label: 'Buy Large Skill Injectors', what: `${formatNum(L.large)} large`, sp: L.got, sell: both(L.large, 0, 'sell'), buy: both(L.large, 0, 'buy') },
+    ...(mixDiffers ? [{ label: 'Buy large + small injectors', what: `${formatNum(M.large)} large + ${M.small} small`, sp: M.got, sell: both(M.large, M.small, 'sell'), buy: both(M.large, M.small, 'buy') }] : []),
+    { label: 'Make your own with Skill Extractors', what: `${formatNum(ext)} extractors`, sp: null, sell: cost(ext, 'extractor', 'sell'), buy: cost(ext, 'extractor', 'buy'), own: true },
+  ];
+  const cheapest = Math.min(...rows.map(r => r.sell ?? Infinity));
+  const brackets = L.by.map(b => `${formatNum(b.n)} × ${formatNum(b.sp)} SP`).join(', ');
+  const bracketNow = largeYield(total);
+  return `<section class="panel inj">
+    <h3>Skill injectors to finish this ${state.pv.scope === 'req' ? 'plan (required only)' : 'plan'}</h3>
+    <div class="inj-head">
+      <div><span>SP to inject</span><b>${formatSp(toInject)}</b><small>${formatNum(Math.round(need))} SP missing${unalloc ? ` − ${formatNum(unalloc)} unallocated already` : ''}</small></div>
+      <div><span>${esc(name)} now</span><b>${formatSp(total)}</b><small>a large injector gives ${formatNum(bracketNow)} SP at this total</small></div>
+      <div><span>Large injectors</span><b>${formatNum(L.large)}</b><small>${brackets}</small></div>
+    </div>
+    <div class="scroll-x"><table class="queue inj-table"><thead><tr><th>Option</th><th>You need</th><th class="num">SP gained</th><th class="num">Cost (Jita sell)</th><th class="num">Cost (Jita buy orders)</th></tr></thead><tbody>
+      ${rows.map(r => `<tr class="${r.sell != null && r.sell === cheapest ? 'best' : ''}"><td>${r.label}${r.sell != null && r.sell === cheapest ? ' <em class="tag">cheapest</em>' : ''}</td><td>${r.what}</td>
+        <td class="num dim">${r.sp == null ? 'same as large' : `${formatNum(Math.round(r.sp))}${r.sp > toInject ? ` <small>(${formatNum(Math.round(r.sp - toInject))} spare)</small>` : ''}`}</td>
+        <td class="num"><b>${iskFmt(r.sell)}</b></td><td class="num dim">${iskFmt(r.buy)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="hint">Injectors are counted one at a time: a large injector gives 500,000 SP under 5M total SP, 400,000 up to 50M, 300,000 up to 80M and 150,000 above that (small ones give a fifth), so the count rises as the character passes each step.
+      "Jita sell" is buying from the cheapest sell orders now; "Jita buy orders" is roughly what you'd pay placing buy orders.
+      Making your own needs donor characters with over 5.5M SP (an extractor takes 500,000 SP each); their Omega time and training aren't in the cost.
+      ${P ? `Prices from Jita, ${timeAgo(P.at)}.` : injLoading ? 'Loading Jita prices…' : 'Jita prices unavailable right now.'}</p>
+  </section>`;
+}
+
 // ---------------------------------------------------------------- picker (fits and skill plans)
 // One compact control instead of a row of tabs: current choice, a searchable drop-down grouped by ship,
 // and previous/next buttons. Rows carry the same data-fit / data-plan attributes the tabs used.
@@ -809,6 +874,7 @@ function renderPlans(main) {
           </tr>`; }).join('')}
         </tbody>
       </table></div>` : `<div class="empty big"><span class="good">✓</span> ${esc(cur.c.name)} has every ${pv.scope === 'req' ? 'required ' : ''}skill in this plan.</div>`}
+      ${steps.length ? injectorPanel(steps, state.snaps[cur.c.id], cur.c.name) : ''}
       ${doneRows.length ? `<h3 class="sub">Already trained</h3><div class="done-list">${doneRows.map(([id, l, rec]) => `<span>✓ ${esc(skName(id))} ${roman(l)}${rec ? ' <small class="dim">(rec)</small>' : ''}</span>`).join('')}</div>` : ''}
       <p class="hint">Required skills (and the prerequisites they need) are listed first, then recommended ones. "Copy missing skills" gives one skill level per line (e.g. <code>Drones IV</code>) for the scope you picked above. Plans are saved to your account.</p>`
       : '<div class="empty big">Add a character to compare plans against.</div>'}`;
